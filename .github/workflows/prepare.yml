@@ -1,0 +1,49 @@
+name: Prepare verified toolchain
+on:
+  push:
+    paths: ['.github/workflows/prepare.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+  pages: write
+jobs:
+  toolchain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Resolve and install requested dependencies
+        run: |
+          mkdir -p toolchain
+          cd toolchain
+          npm init -y
+          npm install --save-exact @angular/core@22 @angular/common@22 @angular/compiler@22 @angular/forms@22 @angular/router@22 @angular/platform-browser@22 @angular/compiler-cli@22 @angular/build@22 @angular/cli@22 @angular/cdk@22 nx@latest @nx/angular@latest @spartan-ng/brain@latest @spartan-ng/cli@latest @lucide/angular@latest konva@latest tailwindcss@4 @tailwindcss/postcss@4 postcss@8 typescript@~6.0.0 rxjs@7 tslib@2 @playwright/test@latest
+          npm ls --depth=0 | tee versions.txt
+          node -e "const fs=require('fs'); for(const n of ['@spartan-ng/brain','@lucide/angular','konva']) { const p=JSON.parse(fs.readFileSync('node_modules/'+n+'/package.json')); console.log(n,JSON.stringify(p.exports),JSON.stringify(p.peerDependencies)); }" | tee exports.txt
+          tar -czf node_modules.tgz node_modules
+          cp "$(which node)" node24
+          tar -czf node24.tgz node24
+      - uses: actions/upload-artifact@v4
+        with:
+          name: verified-toolchain
+          path: |
+            toolchain/package.json
+            toolchain/package-lock.json
+            toolchain/versions.txt
+            toolchain/exports.txt
+            toolchain/node_modules.tgz
+            toolchain/node24.tgz
+          retention-days: 1
+      - name: Check or initialize Pages site
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh api repos/${{ github.repository }}/pages > pages.json; then
+            cat pages.json
+          else
+            gh api --method POST repos/${{ github.repository }}/pages -f build_type=workflow > pages.json
+            cat pages.json
+          fi
