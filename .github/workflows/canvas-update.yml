@@ -35,6 +35,11 @@ jobs:
           xz --decompress --stdout "$RUNNER_TEMP/canvas.patch.xz" > "$RUNNER_TEMP/canvas.patch"
           git apply --check "$RUNNER_TEMP/canvas.patch"
           git apply "$RUNNER_TEMP/canvas.patch"
+          gh api "repos/$GITHUB_REPOSITORY/git/blobs/6ee475801e9c0bd9533d8907d7d66c284be8d145" --jq .content | base64 --decode > "$RUNNER_TEMP/correction.gz"
+          echo "8200a98f230106213dd3d68a7da28770abac07620183ac0c79c64003271223cb  $RUNNER_TEMP/correction.gz" | sha256sum --check
+          gzip --decompress --stdout "$RUNNER_TEMP/correction.gz" > "$RUNNER_TEMP/correction.patch"
+          git apply --check "$RUNNER_TEMP/correction.patch"
+          git apply "$RUNNER_TEMP/correction.patch"
       - run: npm ci
       - run: npm run check
       - run: npm test
