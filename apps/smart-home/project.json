@@ -1,0 +1,70 @@
+{
+  "name": "smart-home",
+  "projectType": "application",
+  "sourceRoot": "apps/smart-home/src",
+  "targets": {
+    "build": {
+      "executor": "@angular/build:application",
+      "outputs": [
+        "{workspaceRoot}/dist/smart-home"
+      ],
+      "options": {
+        "outputPath": "dist/smart-home",
+        "index": "apps/smart-home/src/index.html",
+        "browser": "apps/smart-home/src/main.ts",
+        "tsConfig": "apps/smart-home/tsconfig.app.json",
+        "inlineStyleLanguage": "css",
+        "assets": [
+          {
+            "glob": "**/*",
+            "input": "apps/smart-home/public",
+            "output": "/"
+          }
+        ],
+        "styles": [
+          "apps/smart-home/src/styles.css"
+        ],
+        "baseHref": "/smarthome/",
+        "allowedCommonJsDependencies": []
+      },
+      "configurations": {
+        "production": {
+          "optimization": true,
+          "outputHashing": "all",
+          "sourceMap": false,
+          "budgets": [
+            {
+              "type": "initial",
+              "maximumWarning": "800kB",
+              "maximumError": "1MB"
+            },
+            {
+              "type": "anyComponentStyle",
+              "maximumWarning": "15kB",
+              "maximumError": "40kB"
+            }
+          ]
+        },
+        "development": {
+          "optimization": false,
+          "sourceMap": true,
+          "baseHref": "/"
+        }
+      },
+      "defaultConfiguration": "production"
+    },
+    "serve": {
+      "executor": "@angular/build:dev-server",
+      "options": {
+        "buildTarget": "smart-home:build:development",
+        "port": 4200
+      }
+    },
+    "typecheck": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "tsc --noEmit -p apps/smart-home/tsconfig.app.json"
+      }
+    }
+  }
+}
