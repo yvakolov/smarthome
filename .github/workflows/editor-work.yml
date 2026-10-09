@@ -1,0 +1,23 @@
+name: Verify canvas editing update
+on:
+  push:
+    branches: [work/canvas-edit-20261009]
+    paths: ['.github/workflows/editor-work.yml']
+permissions:
+  contents: read
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: 5ee0722547cc26b33ac6e0a0301d46e99dd40214
+          persist-credentials: false
+      - name: Package the exact public source revision for local verification
+        run: git archive --format=tar.gz --output="$RUNNER_TEMP/smart-home-source.tgz" HEAD
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: smart-home-source
+          path: ${{ runner.temp }}/smart-home-source.tgz
+          retention-days: 1
