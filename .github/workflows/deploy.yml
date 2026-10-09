@@ -2,74 +2,27 @@ name: Build and deploy Smart Home
 on:
   push:
     branches: [main]
-    paths-ignore: ['README.md', 'AGENTS.md', '.github/workflows/prepare.yml']
+    paths-ignore: ['README.md', 'AGENTS.md']
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 permissions:
   contents: read
 concurrency:
-  group: smart-home-pages
+  group: smart-home-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 jobs:
-  source:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: write
-    outputs:
-      sha: ${{ steps.revision.outputs.sha }}
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          ref: main
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '24.21.0'
-      - name: Import initial application source only into an uninitialized workspace
-        if: ${{ hashFiles('package.json') == '' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/smart-home-source"
-          for sha in e4625d76b673f31c12a10775e7c639d97cb1b4b8 b57a94e46b60ba4aee058cd20e3a59e21a88aba5 3127d7e55bbf3c0bc2682bb5716cd0f93ed99637 5e277abcfe7cb95cbe6dbc268ee1cc0c4121f3d6; do
-            gh api "repos/$REPOSITORY/git/blobs/$sha" --jq .content | base64 --decode >> "$RUNNER_TEMP/smart-home-source/application.tar.xz"
-          done
-          echo "09a6c02e510f5dd4ea40cf926c24b9bf67af351c43bb2db2821687d434f76061  $RUNNER_TEMP/smart-home-source/application.tar.xz" | sha256sum --check
-          python3 - <<'PY'
-          import os, pathlib, tarfile
-          path = pathlib.Path(os.environ['RUNNER_TEMP']) / 'smart-home-source/application.tar.xz'
-          with tarfile.open(path) as archive:
-              for member in archive.getmembers():
-                  p = pathlib.PurePosixPath(member.name)
-                  if not member.isfile() or p.is_absolute() or '..' in p.parts or p.parts[0] in ('.git', '.github', 'node_modules'):
-                      raise ValueError('Invalid source archive member: ' + member.name)
-                  if member.size > 250000:
-                      raise ValueError('Oversized source file: ' + member.name)
-              archive.extractall('.', filter='data')
-          PY
-          npm install --package-lock-only --ignore-scripts
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add .editorconfig .gitignore .nvmrc .postcssrc.json AGENTS.md README.md apps e2e nx.json package.json package-lock.json playwright.config.ts tests tsconfig.base.json
-          git commit -m 'feat: implement standalone Smart Home with Angular 22 and Konva'
-          git push origin HEAD:main
-      - id: revision
-        name: Record exact source revision
-        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
   build:
-    needs: source
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
       NX_DAEMON: 'false'
       NX_ISOLATE_PLUGINS: 'false'
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
-          ref: ${{ needs.source.outputs.sha }}
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '24.21.0'
           cache: npm
@@ -79,13 +32,14 @@ jobs:
       - run: npx playwright install --with-deps chromium
       - run: npm run e2e
       - run: npm run build
-      - name: Record dependency audit
+      - name: Verify optimized application under the Pages base path
+        run: node e2e/production.mjs
+      - name: Audit runtime dependencies
         if: always()
-        run: |
-          npm audit --omit=dev --json > dependency-audit.json || true
-      - name: Retain browser report and dependency audit
+        run: npm audit --omit=dev --audit-level=high --json > dependency-audit.json
+      - name: Retain verification evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: smart-home-verification
           path: |
@@ -93,11 +47,18 @@ jobs:
             test-results/
             dependency-audit.json
           retention-days: 7
+      - name: Record deployed revision
+        env:
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          node --input-type=module -e "import fs from 'node:fs';fs.writeFileSync('dist/smart-home/browser/build-info.json',JSON.stringify({application:'Smart Home',commit:process.env.COMMIT_SHA,builtAt:new Date().toISOString()}));"
       - name: Upload static application
-        uses: actions/upload-pages-artifact@v4
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
         with:
           path: dist/smart-home/browser
   deploy:
+    if: github.event_name != 'pull_request'
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -114,3 +75,20 @@ jobs:
       - name: Deploy Smart Home
         id: deployment
         uses: actions/deploy-pages@v4
+      - name: Verify public site and deployed revision
+        env:
+          PAGE_URL: ${{ steps.deployment.outputs.page_url }}
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --retry 8 --retry-all-errors --retry-delay 5 "${PAGE_URL}?run=${GITHUB_RUN_ID}" > page.html
+          grep -q '<sh-root' page.html
+          for attempt in $(seq 1 12); do
+            if curl --fail --silent --show-error "${PAGE_URL}build-info.json?run=${GITHUB_RUN_ID}-${attempt}" > build-info.json && python3 -c 'import json,os; assert json.load(open("build-info.json"))["commit"] == os.environ["COMMIT_SHA"]'; then
+              echo "Published and verified: ${PAGE_URL}" >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo 'The public artifact revision did not match this workflow.' >&2
+          exit 1
