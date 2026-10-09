@@ -1,0 +1,21 @@
+name: Verify canvas editing update
+on:
+  push:
+    branches: [feat/canvas-contour-editing]
+permissions:
+  contents: read
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+      - name: Export tracked source
+        run: git archive --format=tar HEAD > "$RUNNER_TEMP/source.tar"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: canvas-editing-source
+          path: ${{ runner.temp }}/source.tar
+          retention-days: 1
