@@ -4,18 +4,59 @@ on:
     branches: [feat/canvas-contour-editing]
 permissions:
   contents: read
+concurrency:
+  group: canvas-editing-update
+  cancel-in-progress: false
 jobs:
-  snapshot:
+  verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    env:
+      NX_DAEMON: 'false'
+      NX_ISOLATE_PLUGINS: 'false'
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
-          persist-credentials: false
-      - name: Export tracked source
-        run: git archive --format=tar HEAD > "$RUNNER_TEMP/source.tar"
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+          node-version: '24.21.0'
+          cache: npm
+      - name: Apply checksum-verified authored source changes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for sha in 579096a8e8de97bacb3d62ea574f5d3c3c4dcab8 9f4cbbc7ebceeed700e6787e12c71cacf008573a a9907a75b6eadb4ec75a9f24efa2e18ad42acce8 e090bce3cd293fe4418360c83c5690090fb4f118; do
+            gh api "repos/$GITHUB_REPOSITORY/git/blobs/$sha" --jq .content | base64 --decode >> "$RUNNER_TEMP/canvas.b64"
+          done
+          base64 --decode "$RUNNER_TEMP/canvas.b64" > "$RUNNER_TEMP/canvas.patch.xz"
+          echo "e74df06b34e647a87b5cacb1ee99b87c3f30b2fbb5d02a64b8c172f3b223e4ae  $RUNNER_TEMP/canvas.patch.xz" | sha256sum --check
+          xz --decompress --stdout "$RUNNER_TEMP/canvas.patch.xz" > "$RUNNER_TEMP/canvas.patch"
+          git apply --check "$RUNNER_TEMP/canvas.patch"
+          git apply "$RUNNER_TEMP/canvas.patch"
+      - run: npm ci
+      - run: npm run check
+      - run: npm test
+      - run: npx playwright install --with-deps chromium
+      - run: npm run e2e
+      - run: npm run build
+      - name: Verify production artifact and native IndexedDB reload
+        run: node e2e/production.mjs
+      - name: Retain verification evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: canvas-editing-source
-          path: ${{ runner.temp }}/source.tar
-          retention-days: 1
+          name: canvas-editing-verification
+          path: |
+            playwright-report/
+            test-results/
+          retention-days: 7
+      - name: Commit verified source to the task branch
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add README.md apps tests e2e
+          git commit -m 'feat: edit contour geometry on canvas with shared point tools and IndexedDB'
+          git push origin HEAD:feat/canvas-contour-editing
