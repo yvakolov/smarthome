@@ -1,0 +1,11 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {ProjectsRepository,isProject,decodeProjects} from '../apps/smart-home/src/app/core/projects.repository.ts';
+const project=()=>({id:'p-1',name:'  Дом 1  ',sequence:1,points:[],contours:[],closed:false,draft:{points:[],tool:'graphical',rect:null},units:'mm',updatedAt:new Date().toISOString()});
+function fixture(){let transaction;const factory={open(){const request={};queueMicrotask(()=>{request.result={objectStoreNames:{contains:()=>true},transaction(name,mode){transaction={objectStore:()=>({put(value){transaction.value=structuredClone(value);return {};}})};return transaction;},close(){}};request.onsuccess();});return request;}};Object.defineProperty(globalThis,'indexedDB',{configurable:true,value:factory});return()=>transaction;}
+const tick=()=>new Promise(r=>setTimeout(r,0));
+test('write does not resolve before transaction complete',async()=>{const get=fixture(),r=new ProjectsRepository();let resolved=false;const promise=r.save(project()).then(p=>{resolved=true;return p;});await tick();assert.equal(resolved,false);assert.equal(get().value.name,'Дом 1');get().oncomplete();assert.equal((await promise).name,'Дом 1');assert.equal(resolved,true);});
+test('transaction abort rejects and leaves input unchanged',async()=>{const get=fixture(),r=new ProjectsRepository(),p=project(),before=structuredClone(p),promise=r.save(p);await tick();get().error=new Error('Quota exceeded');get().onabort();await assert.rejects(promise,/Quota/);assert.deepEqual(p,before);});
+test('blank name rejected without starting a database write',async()=>{const get=fixture(),r=new ProjectsRepository();await assert.rejects(r.save({...project(),name:'  '}),/название/);assert.equal(get(),undefined);});
+test('invalid geometry and invalid color are rejected',()=>{assert.equal(isProject({...project(),points:[{x:NaN,y:0}]}),false);const contours=[{id:'c',name:'',color:'bad',points:[{x:0,y:0},{x:1,y:0},{x:0,y:1}]}];assert.equal(isProject({...project(),contours}),false);});
+test('legacy decode retains source content and rejects wrong envelope',()=>{const p=project(),raw=JSON.stringify({format:'smart-home',version:1,projects:[p]});assert.deepEqual(decodeProjects(raw),[p]);assert.throws(()=>decodeProjects('{"version":2}'));});

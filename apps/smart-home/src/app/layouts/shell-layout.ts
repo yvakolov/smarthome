@@ -1,17 +1,16 @@
-import { Component,ChangeDetectionStrategy,inject,signal } from '@angular/core';
-import { Router,RouterLink,RouterOutlet } from '@angular/router';
-import { LucideHouse,LucideBookOpen,LucideUserRound,LucideLogOut,LucideX } from '@lucide/angular';
+import { Component, ChangeDetectionStrategy, inject } from '@angular/core';
+import { Router, RouterLink, RouterOutlet } from '@angular/router';
+import { LucideHouse, LucideBookOpen, LucideUserRound, LucideLogOut, LucideX } from '@lucide/angular';
 import { AuthService } from '../core/auth';
 import { HlmButton } from '../ui/primitives';
-@Component({selector:'sh-shell-layout',imports:[RouterLink,RouterOutlet,HlmButton,LucideHouse,LucideBookOpen,LucideUserRound,LucideLogOut,LucideX],changeDetection:ChangeDetectionStrategy.OnPush,template:`
-<div class="shell-layout">
-  <header class="header"><a hlmBtn routerLink="/projects" class="brand" aria-label="Smart Home — к проектам"><svg lucideHouse [size]="25" [strokeWidth]="1.5"></svg><span>Smart Home</span></a>
-    <div class="header-end"><button hlmBtn class="icon-button" (click)="help.showModal()" title="Документация" aria-label="Документация"><svg lucideBookOpen [size]="19"></svg></button>
-      <button hlmBtn class="icon-button account-button" (click)="account.showModal()" title="Аккаунт" aria-label="Аккаунт"><svg lucideUserRound [size]="18"></svg></button></div>
-  </header><section class="shell-content"><router-outlet /></section>
-</div>
-<dialog #help id="helpDialog" aria-label="Документация Smart Home"><div class="modal-head"><h2>Работа с контуром</h2><button hlmBtn class="icon-button" type="button" (click)="help.close()" aria-label="Закрыть документацию"><svg lucideX [size]="18"></svg></button></div>
-<dl class="help-keys">
+import { HlmCardImports } from '../ui/card';
+@Component({selector:'sh-shell-layout',imports:[RouterLink,RouterOutlet,HlmButton,HlmCardImports,LucideHouse,LucideBookOpen,LucideUserRound,LucideLogOut,LucideX],changeDetection:ChangeDetectionStrategy.OnPush,template:`
+<div class="shell-layout"><header class="header"><a hlmBtn routerLink="/projects" class="brand" aria-label="Smart Home — к проектам"><svg lucideHouse [size]="25" [strokeWidth]="1.5" /><span>Smart Home</span></a>
+<div class="header-end"><button hlmBtn class="icon-button" (click)="help.showModal()" title="Документация" aria-label="Документация"><svg lucideBookOpen [size]="19" /></button><button hlmBtn class="icon-button account-button" (click)="account.showModal()" title="Аккаунт" aria-label="Аккаунт"><svg lucideUserRound [size]="18" /></button></div>
+</header><section class="shell-content"><router-outlet /></section></div>
+<dialog #help id="helpDialog" aria-labelledby="helpHeading"><section hlmCard class="modal-card">
+<header hlmCardHeader><h2 hlmCardTitle id="helpHeading">Работа с контуром</h2><button hlmBtn class="icon-button" type="button" (click)="help.close()" aria-label="Закрыть документацию"><svg lucideX [size]="18" /></button></header>
+<div hlmCardContent><dl class="help-keys">
 <dt>Первая точка</dt><dd>Щелчок на сетке или X → Tab → Y → Enter в командной строке.</dd>
 <dt>← ↑ ↓ →</dt><dd>Направление → длина в миллиметрах → Enter. Работает и Enter цифрового блока. Кнопка ↵ подтверждает ввод мышью.</dd>
 <dt>Замкнуть</dt><dd>Правая кнопка, C или щелчок по первой точке. После завершения инструмент выключается. Для следующего контура снова нажмите его иконку и выберите способ построения.</dd>
@@ -29,14 +28,19 @@ import { HlmButton } from '../ui/primitives';
 <dt>На кромке</dt><dd>Выберите ребро. Точка будет двигаться только по нему; щелчок или Enter подтверждает положение. При включённой привязке шаг отсчитывается вдоль ребра.</dd>
 <dt>Две опоры</dt><dd>Задержите курсор на ребре, затем на вершине примерно на треть секунды. Либо закрепите каждую опору через Alt + щелчок. Ребро задаёт параллель, выбранная точка — перпендикуляр через себя. Обе опоры сохраняются до подтверждения следующего отрезка. Точный размер и направление стрелки имеют приоритет.</dd>
 <dt>Границы</dt><dd>Разрешены отдельные контуры и примыкание по общей границе. Пересечение сторон, наложение площадей, вложенный контур и самопересечение не допускаются. Ошибка не фиксирует точку — можно исправить ввод.</dd>
-<dt>Подпись</dt><dd>После завершения двойной щелчок внутри контура или по его границе открывает название. Оно отображается на канвасе и сохраняется с контуром. Пустое поле убирает подпись.</dd>
+<dt>Контур</dt><dd>Один щелчок по готовому контуру открывает инспектор: название, габариты, угол и цвет. Слева у инспектора — граница изменения ширины (240 px — 30% окна). На мобильном — 90% ширины.</dd>
 <dt>Esc / Ctrl Z</dt><dd>Esc: снять числовой ввод, направляющие или приостановить инструмент. Ctrl/⌘ Z — отмена; Ctrl/⌘ Shift Z или Ctrl Y — повтор.</dd>
-<dt>Сетка / магнит</dt><dd>Видимость сетки и привязка независимы. Шаг меняется только при видимой сетке. Ортогональность — иконка угла или F8.</dd>
+<dt>Сетка / магнит</dt><dd>Магнит привязывает свободный курсор к узлам сетки с выбранным шагом. Точный числовой ввод и команды временных точек используют заданную геометрию. Видимость сетки независима от привязки.</dd>
 <dt>Навигация</dt><dd>Колесо — масштаб; перетаскивание с зажатым колесом или Пробел + левая кнопка — сдвиг. Щелчок колесом без перетаскивания — временные точки. Тачпад: два пальца — сдвиг, щипок / Ctrl + прокрутка — масштаб. F — вписать.</dd>
-<dt>Сохранение</dt><dd>Диск или Ctrl/⌘ S сохраняет текущий проект в этом браузере. Логотип возвращает к карточкам; щелчок по существующей карточке снова открывает проект. Подтверждённый черновик открывается на паузе: продолжить можно через иконку контура.</dd>
-</dl>
-<p>Smart Home сохраняет проекты локально. Несохранённые изменения доступны только в текущей вкладке. Нет серверной авторизации, синхронизации, BIM, отверстий и объединения контуров. Вход демонстрационный. Старые сохранения с пересекающимися контурами открываются без исправления; ограничения применяются к новым построениям.</p>
-<p>При недоступном хранилище «Сохранить» выгружает JSON. Его импорт пока не реализован. Очистка данных браузера удаляет локальные проекты; другой браузер использует отдельное хранилище.</p>
-<p class="mobile-note">Для точного ввода используйте компьютер с клавиатурой. P открывает временные точки без средней кнопки.</p></dialog>
-<dialog #account aria-label="Аккаунт"><div class="modal-head"><h2>juralab</h2><button hlmBtn class="icon-button" aria-label="Закрыть аккаунт" (click)="account.close()"><svg lucideX [size]="18"></svg></button></div><p>Демонстрационный аккаунт. Проекты сохранены только в этом браузере.</p><button hlmBtn class="secondary" (click)="account.close();signOut()"><svg lucideLogOut [size]="17"></svg>Выйти</button></dialog>`})
+<dt>Операции</dt><dd>Правая кнопка на готовом контуре: удалить, редактировать, переместить, дублировать, повернуть. Во время построения правая кнопка по-прежнему замыкает контур.</dd>
+<dt>Перенос / копия</dt><dd>Выберите точку на границе исходного контура, затем целевую точку. До Enter или левого щелчка показывается только проекция. Esc отменяет действие. Стрелка и расстояние задают точное смещение.</dd>
+<dt>Поворот контура</dt><dd>Выберите центр на контуре, затем задайте относительный угол или поверните проекцию мышью. Enter / левый щелчок применяет поворот. Esc оставляет исходный контур без изменений.</dd>
+<dt>Инференс</dt><dd>Удержите курсор над ребром и вершиной или выберите их через Alt + щелчок. Ребро и точка удерживаются независимо. Вспомогательные оси и параллель / перпендикуляр показывают точное пересечение. Явно выбранная геометрия имеет приоритет над сеткой.</dd>
+<dt>Сохранение</dt><dd>Первое сохранение открывает название проекта. Только после записи в IndexedDB появляется карточка в менеджере. Повторное сохранение обновляет этот же проект. Щелчок по карточке открывает сохранённые данные.</dd>
+<dt>Правка на холсте</dt><dd>Выберите контур. Перемещайте круглую вершину или ребро; + на стороне добавляет вершину. Shift + щелчок добавляет точку в любом месте ребра. Можно перетаскивать либо выбрать ручку, затем указать цель и подтвердить ЛКМ или Enter. Стрелка → расстояние задаёт точное смещение. P или колесо открывает все пять временных точек. Esc отменяет предварительный выбор, затем саму правку. Исходная форма сохраняется до подтверждения; Ctrl/⌘ Z отменяет целую операцию.</dd></dl><p>Проекты хранятся в IndexedDB текущего браузера. Черновик до первого сохранения не появляется в менеджере. Серверной синхронизации нет; очистка данных сайта удаляет локальные сохранения. Демонстрационный вход не является серверной защитой.</p></div>
+<footer hlmCardFooter><button hlmBtn class="secondary" type="button" (click)="help.close()">Закрыть</button></footer></section></dialog>
+<dialog #account id="accountDialog" aria-labelledby="accountHeading"><section hlmCard class="modal-card">
+<header hlmCardHeader><h2 hlmCardTitle id="accountHeading">Аккаунт</h2><button hlmBtn class="icon-button" type="button" aria-label="Закрыть аккаунт" (click)="account.close()"><svg lucideX [size]="18" /></button></header>
+<div hlmCardContent><p>juralab</p><p>Демонстрационный аккаунт. Проекты хранятся в этом браузере.</p></div>
+<footer hlmCardFooter><button hlmBtn class="secondary" type="button" (click)="account.close()">Отмена</button><button hlmBtn class="secondary" type="button" (click)="account.close();signOut()"><svg lucideLogOut [size]="17" />Выйти</button></footer></section></dialog>`})
 export class ShellLayout {private readonly auth=inject(AuthService);private readonly router=inject(Router);signOut():void{this.auth.signOut();void this.router.navigate(['/auth/login']);}}

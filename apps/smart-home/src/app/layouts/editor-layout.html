@@ -1,17 +1,24 @@
-<main data-layout="editor" class="editor" id="editor" aria-label="Рабочее пространство">
+<main [class.inspector-open]="!!selectedContour() && !inspectorHidden()" [style.--inspector-width]="inspectorWidth() + 'px'" data-layout="editor" class="editor" id="editor" aria-label="Рабочее пространство">
 <div data-zone="toolbar" class="toolbar" role="toolbar" aria-label="Инструменты">
 <button hlmBtn class="icon-button" id="newDisabled" aria-label="Создать — пока недоступно" title="Создать — пока недоступно" disabled><svg lucideFilePlus2 class="icon" [size]="18" [strokeWidth]="1.5" aria-hidden="true"></svg></button>
 <button hlmBtn class="icon-button" id="openDisabled" aria-label="Открыть — пока недоступно" title="Открыть — пока недоступно" disabled><svg lucideFolderOpen class="icon" [size]="18" [strokeWidth]="1.5" aria-hidden="true"></svg></button>
 <button hlmBtn class="icon-button" id="save" title="Сохранить в браузере (Ctrl/⌘ S)" aria-label="Сохранить"><svg lucideSave class="icon" [size]="18" [strokeWidth]="1.5" aria-hidden="true"></svg></button>
 <div class="tool-sep" role="separator"></div>
-<button hlmBtn class="icon-button" id="undo" aria-label="Отменить" title="Отменить (Ctrl/⌘ Z)"><svg lucideUndo2 class="icon" [size]="18" [strokeWidth]="1.5" aria-hidden="true"></svg></button>
-<button hlmBtn class="icon-button" id="redo" aria-label="Повторить" title="Повторить (Ctrl/⌘ Shift Z)"><svg lucideRedo2 class="icon" [size]="18" [strokeWidth]="1.5" aria-hidden="true"></svg></button>
+<button hlmBtn class="icon-button" id="undo" aria-label="Отменить" title="Отменить (Ctrl/⌘ Z)" disabled><svg lucideUndo2 class="icon" [size]="18" [strokeWidth]="1.5" aria-hidden="true"></svg></button>
+<button hlmBtn class="icon-button" id="redo" aria-label="Повторить" title="Повторить (Ctrl/⌘ Shift Z)" disabled><svg lucideRedo2 class="icon" [size]="18" [strokeWidth]="1.5" aria-hidden="true"></svg></button>
 <div class="tool-sep" role="separator"></div>
 <button hlmBtn class="icon-button" id="contourTool" aria-label="Контур здания" title="Контур здания"><svg lucideScanLine class="icon" [size]="18" [strokeWidth]="1.5" aria-hidden="true"></svg></button>
 </div>
-<aside data-zone="navigation" hidden aria-label="Навигация"></aside><aside data-zone="inspector" hidden aria-label="Инспектор"></aside><div data-zone="canvas" class="stage" id="stage"><div id="canvas" class="konva-host" role="application" tabindex="0" aria-label="Канвас. Первая точка — мышью или координатами. Стрелка, длина, Enter. Правая кнопка — замкнуть."></div>
+<aside data-zone="navigation" hidden aria-label="Навигация"></aside><sh-contour-inspector data-zone="inspector" [hidden]="!selectedContour() || inspectorHidden()" [contour]="selectedContour()" [error]="inspectorError()"
+  (closed)="clearSelection()" (changed)="updateContour($event)" (editRequested)="editOnCanvas()" (widthChanged)="inspectorWidth.set($event)" /><div data-zone="canvas" class="stage" id="stage"><div id="canvas" class="konva-host" role="application" tabindex="0" aria-label="Канвас. Первая точка — мышью или координатами. Стрелка, длина, Enter. Правая кнопка — замкнуть."></div>
 <div class="stage-hint" id="stageHint"><h2>Начните с контура здания</h2><p>Нарисуйте форму дома.<br>Размеры можно задать с клавиатуры.</p><button hlmBtn class="secondary" id="beginContour"><svg lucideScanLine class="icon" [size]="18" [strokeWidth]="1.5" aria-hidden="true"></svg>Задать контур</button></div></div>
 <div data-zone="console" class="console" aria-label="Командная строка"><span class="prompt" aria-hidden="true">›</span>
+<form id="operationForm" class="console-controls" hidden autocomplete="off">
+  <span class="direction-label" id="operationDirection"></span>
+  <label id="operationAngleLabel">Угол <input hlmInput id="operationAngle" value="0" inputmode="decimal" aria-label="Угол преобразования"><span class="unit">°</span></label>
+  <label id="operationDistanceLabel">Расстояние <input hlmInput id="operationDistance" inputmode="decimal" aria-label="Расстояние перемещения"><span class="unit">мм</span></label>
+  <button hlmBtn type="submit" class="icon-button" aria-label="Подтвердить преобразование">↵</button>
+</form>
 <form class="console-controls" id="originForm" hidden><label>X <input hlmInput id="originX" aria-label="Начальная X" inputmode="decimal" autocomplete="off" spellcheck="false" value="0"></label><label>Y <input hlmInput id="originY" aria-label="Начальная Y" inputmode="decimal" autocomplete="off" spellcheck="false" value="0"></label><span class="unit">мм</span><button hlmBtn type="submit" class="icon-button" title="Подтвердить начальную точку (Enter)" aria-label="Подтвердить начальную точку">↵</button></form>
 <form class="console-controls" id="lineForm" hidden><span class="direction-label" id="directionLabel"></span><label>Длина <input hlmInput id="lineLength" aria-label="Длина отрезка" inputmode="decimal" autocomplete="off" spellcheck="false" placeholder="мм"></label><button hlmBtn type="submit" class="icon-button" title="Построить отрезок (Enter)" aria-label="Построить отрезок">↵</button></form>
 <form id="rectForm" class="console-controls" hidden autocomplete="off">
@@ -24,14 +31,18 @@
 <div data-zone="status-bar" class="statusbar" aria-label="Строка состояния">
 <button hlmBtn class="icon-button on" id="gridToggle" title="Показывать сетку" aria-label="Показывать сетку" aria-pressed="true"><svg lucideGrid2x2 class="icon" [size]="18" [strokeWidth]="1.5" aria-hidden="true"></svg></button>
 <label class="grid-setting" title="Шаг сетки в миллиметрах"><input hlmInput id="gridStep" value="100" inputmode="decimal" aria-label="Шаг сетки"><span class="unit">мм</span></label>
-<button hlmBtn class="icon-button on" id="snapToggle" title="Привязка к сетке" aria-label="Привязка к сетке" aria-pressed="true"><svg lucideMagnet class="icon" [size]="18" [strokeWidth]="1.5" aria-hidden="true"></svg></button>
+<button hlmBtn class="icon-button on" id="snapToggle" title="Привязка к сетке" aria-label="Привязка к сетке" aria-pressed="true"><svg lucideMagnet class="icon" [size]="18" aria-hidden="true"></svg></button>
 <button hlmBtn class="icon-button" id="orthoToggle" title="Ортогональность: горизонталь / вертикаль (F8)" aria-label="Ортогональность" aria-pressed="false"><svg lucideCornerDownRight class="icon" [size]="18" [strokeWidth]="1.5" aria-hidden="true"></svg></button>
-<label id="angleStepSetting" class="angle-step-setting" title="Шаг поворота мышью, в градусах" hidden><svg lucideRotateCcw class="icon" [size]="18" [strokeWidth]="1.5" aria-hidden="true"></svg><span class="angle-step-caption">Шаг</span><input hlmInput id="angleStep" value="1" inputmode="decimal" autocomplete="off" aria-label="Шаг угла поворота"><span class="unit">°</span></label>
+<label id="angleStepSetting" class="angle-step-setting" title="Шаг поворота мышью, в градусах" hidden><svg lucideRotateCcw class="icon" aria-hidden="true" [size]="18" [strokeWidth]="1.5"></svg><span class="angle-step-caption">Шаг</span><input hlmInput id="angleStep" value="1" inputmode="decimal" autocomplete="off" aria-label="Шаг угла поворота"><span class="unit">°</span></label>
 <div class="tool-sep device-divider" role="separator"></div>
 <button hlmBtn class="icon-button" id="deviceMode" aria-label="Навигация: мышь. Переключить на тачпад" title="Мышь. Нажмите для переключения на тачпад"><svg lucideMouse id="deviceMouse" class="icon" [size]="18"></svg><svg lucideTouchpad id="deviceTrackpad" class="icon" [size]="18" hidden></svg></button>
 <div class="coordinates" aria-label="Текущие координаты"><span>X <output id="coordX">0</output></span><span>Y <output id="coordY">0</output></span><span class="unit">мм</span></div>
 <div class="view-controls"><button hlmBtn class="icon-button" id="fit" aria-label="Вписать в окно" title="Вписать в окно (F)"><svg lucideScan class="icon" [size]="18" [strokeWidth]="1.5" aria-hidden="true"></svg></button><div class="tool-sep"></div><button hlmBtn class="icon-button" id="zoomOut" title="Уменьшить масштаб" aria-label="Уменьшить масштаб">−</button><label class="zoom-field"><input hlmInput id="zoomValue" value="100" aria-label="Масштаб в процентах" inputmode="decimal"><span>%</span></label><button hlmBtn class="icon-button" id="zoomIn" title="Увеличить масштаб" aria-label="Увеличить масштаб">+</button></div>
-</div></main><dialog id="methodDialog"><div class="modal-head"><h2>Контур здания</h2><button hlmBtn class="icon-button" id="closeMethods" aria-label="Закрыть выбор способа"><svg lucideX class="icon" [size]="18" [strokeWidth]="1.5" aria-hidden="true"></svg></button></div><div class="methods"><button hlmBtn class="method" id="graphicalTool"><svg lucideScanLine class="icon" [size]="18" [strokeWidth]="1.5" aria-hidden="true"></svg><strong>Графически</strong><small>Точки мышью, размеры с клавиатуры</small></button><button hlmBtn class="method" id="rectangleTool"><svg lucideRectangleHorizontal class="icon" [size]="18" [strokeWidth]="1.5" aria-hidden="true"></svg><strong>Прямоугольник</strong><small>Начальная точка, проекция и размеры</small></button></div></dialog>
+</div></main><dialog id="methodDialog" aria-labelledby="methodHeading"><section hlmCard class="modal-card">
+<header hlmCardHeader><h2 hlmCardTitle id="methodHeading">Контур здания</h2><button hlmBtn class="icon-button" type="button" id="closeMethods" aria-label="Закрыть выбор способа"><svg lucideX [size]="18" /></button></header>
+<div hlmCardContent class="methods"><button hlmBtn type="button" class="method" id="graphicalTool"><svg lucideScanLine [size]="30" /><strong>Графически</strong><small>Точки мышью, размеры с клавиатуры</small></button><button hlmBtn type="button" class="method" id="rectangleTool"><svg lucideRectangleHorizontal [size]="30" /><strong>Прямоугольник</strong><small>Начальная точка, проекция и размеры</small></button></div>
+<footer hlmCardFooter><button hlmBtn type="button" class="secondary" id="cancelMethods">Отмена</button></footer>
+</section></dialog>
 <div id="pointMenu" class="point-menu" role="menu" aria-label="Временные точки" hidden>
 <div class="point-menu-title">Временные точки <kbd>P</kbd></div>
 <button hlmBtn type="button" role="menuitem" data-point="area" title="Выделить рамкой область пересечений отрезков">Точка пересечения</button>
@@ -57,8 +68,18 @@
 <button hlmBtn role="menuitem" disabled title="Пока не реализовано">Квадрант</button>
 <button hlmBtn role="menuitem" disabled title="Пока не реализовано">Касательная</button>
 </div>
-<dialog id="renameDialog" aria-labelledby="renameHeading"><form id="renameForm">
-<div class="modal-head"><h2 id="renameHeading">Название контура</h2><button hlmBtn type="button" class="icon-button" id="closeRename" aria-label="Закрыть"><svg lucideX class="icon" [size]="18" [strokeWidth]="1.5" aria-hidden="true"></svg></button></div>
-<input hlmInput id="contourName" aria-label="Название контура" placeholder="Дом, терраса, балкон…" maxlength="80" autocomplete="off">
-<div class="dialog-actions"><button hlmBtn type="button" class="secondary" id="cancelRename">Отмена</button><button hlmBtn type="submit" class="secondary primary">Применить</button></div>
-</form></dialog>
+
+<dialog #saveDialog id="saveProjectDialog" aria-labelledby="saveProjectHeading" (cancel)="cancelNaming($event)">
+  <form hlmCard class="modal-card" (submit)="confirmNaming($event)" [attr.aria-busy]="saving()">
+    <header hlmCardHeader><h2 hlmCardTitle id="saveProjectHeading">Сохранить проект</h2>
+      <button hlmBtn type="button" class="icon-button" aria-label="Закрыть сохранение" [disabled]="saving()" (click)="cancelNaming()"><svg lucideX [size]="18" /></button></header>
+    <div hlmCardContent><label for="projectName">Название проекта</label>
+      <input hlmInput id="projectName" [value]="projectName()" (input)="setProjectName($event)" maxlength="120" autocomplete="off" [disabled]="saving()" aria-describedby="saveProjectError">
+      <p id="saveProjectError" class="form-error" role="alert">{{saveError()}}</p>
+    </div>
+    <footer hlmCardFooter><button hlmBtn type="button" class="secondary" [disabled]="saving()" (click)="cancelNaming()">Отмена</button>
+      <button hlmBtn type="submit" class="secondary primary" [disabled]="saving()">{{saving() ? 'Сохранение…' : 'Сохранить'}}</button></footer>
+  </form>
+</dialog>
+
+@if(contextMenu(); as menu){<sh-contour-menu [position]="menu" (command)="runContourCommand($event)" (dismissed)="closeContextMenu()" />}

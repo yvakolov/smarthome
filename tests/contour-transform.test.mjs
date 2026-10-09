@@ -1,0 +1,14 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {contourFrame,resizeContour,moveContour,rotateContour} from '../apps/smart-home/src/app/editor/contour-transform.js';
+import {validate,overlap,signedArea,perimeter} from '../apps/smart-home/src/app/editor/geometry.js';
+const rectangle=[{x:125,y:275},{x:10125,y:275},{x:10125,y:8275},{x:125,y:8275}];
+const close=(a,b,e=1e-5)=>assert.ok(Math.abs(a-b)<e,`${a} != ${b}`);
+for(const angle of [0,45,90,135,180,-90,22.5])test(`rotation ${angle} keeps area/perimeter/pivot`,()=>{const ps=rotateContour(rectangle,rectangle[0],angle);close(Math.abs(signedArea(ps)),80000000);close(perimeter(ps),36000);assert.deepEqual(ps[0],rectangle[0]);assert.equal(validate(ps),null);});
+test('translation maps source anchor exactly to destination',()=>{const before=structuredClone(rectangle),target={x:-1523,y:960.75},ps=moveContour(rectangle,rectangle[1],target);assert.deepEqual(ps[1],target);assert.deepEqual(rectangle,before);close(perimeter(ps),36000);});
+test('resize preserves first vertex and changes local bounds',()=>{const ps=resizeContour(rectangle,{width:20000,height:6000,angle:33}),frame=contourFrame(ps);assert.deepEqual(ps[0],rectangle[0]);close(frame.width,20000);close(frame.height,6000);close(frame.angle,33);close(frame.area,120);});
+test('concave polygon retains vertex count and proportional area',()=>{const p=[{x:0,y:0},{x:6e3,y:0},{x:6e3,y:3e3},{x:4e3,y:3e3},{x:4e3,y:5e3},{x:0,y:5e3}];const ps=resizeContour(p,{width:12000,height:10000,angle:45});assert.equal(ps.length,6);close(signedArea(ps),signedArea(p)*4);assert.equal(validate(ps),null);});
+test('invalid dimensions rejected before writing',()=>{for(const n of [-1,0,Infinity,NaN])assert.throws(()=>resizeContour(rectangle,{width:n}));assert.throws(()=>resizeContour(rectangle,{angle:Infinity}));});
+test('copy coincident overlaps but separated does not',()=>{assert.equal(overlap(rectangle,structuredClone(rectangle)),true);const moved=moveContour(rectangle,rectangle[0],{x:15125,y:275});assert.equal(overlap(rectangle,moved),false);});
+test('common boundary is allowed for translated copy',()=>{const adjacent=moveContour(rectangle,rectangle[0],{x:10125,y:275});assert.equal(overlap(rectangle,adjacent),false);});
+test('source records and names are not modified by transforms',()=>{const before=structuredClone(rectangle);rotateContour(rectangle,rectangle[2],60);resizeContour(rectangle,{height:4000});assert.deepEqual(rectangle,before);});

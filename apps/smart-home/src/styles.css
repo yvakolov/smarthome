@@ -79,3 +79,146 @@ a.brand{text-decoration:none;color:inherit}
 .dialog-actions button{gap:6px}
 @media(max-width:540px){.login-card{padding:28px}.auth-layout{padding:20px}.login-card h1{font-size:16px}}
 @media(prefers-reduced-motion:reduce){*{transition:none!important;scroll-behavior:auto!important}}
+
+
+/* Smart Home: centered access, shared modal Cards, and contextual inspector. */
+.auth-layout {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  min-height: 0;
+  overflow: auto;
+  padding: 28px;
+}
+.auth-layout > router-outlet { display: none; }
+sh-login-page { display: block; width: min(100%, 390px); flex: none; margin: auto; }
+.login-card { width: 100%; }
+
+/* Explicit margins survive CSS resets; top-layer dialogs remain focus-trapped. */
+dialog {
+  position: fixed;
+  inset: 0;
+  margin: auto;
+  width: min(510px, calc(100vw - 32px));
+  height: fit-content;
+  max-width: calc(100vw - 32px);
+  max-height: calc(100dvh - 32px);
+  padding: 0;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  overflow: visible;
+}
+dialog:not([open]) { display: none; }
+dialog .modal-card {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  width: 100%;
+  max-height: calc(100dvh - 32px);
+  margin: 0;
+  padding: 0;
+  gap: 0;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+  color: var(--ink);
+  box-shadow: 0 16px 70px #263c3020;
+}
+.modal-card > [hlmCardHeader] {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-width: 0;
+  padding: 18px 22px;
+  border-bottom: 1px solid var(--line);
+}
+.modal-card [hlmCardTitle] { margin: 0; font-size: 17px; font-weight: 550; overflow-wrap: anywhere; }
+.modal-card > [hlmCardContent] {
+  min-height: 0;
+  min-width: 0;
+  padding: 22px;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.modal-card > [hlmCardFooter] {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 22px;
+  border-top: 1px solid var(--line);
+}
+.modal-card > [hlmCardFooter] .secondary { margin-top: 0; }
+.modal-card .help-keys { margin: 0; }
+.modal-card .form-error { color: #b7473c; font-size: 12px; margin: 8px 0 0; }
+.modal-card .form-error:empty { display: none; }
+.modal-card label, .inspector-content > label { display: block; margin-bottom: 8px; font-size: 12px; color: #536b5e; }
+#projectName { width: 100%; height: 42px; padding: 9px 12px; border: 1px solid #cddfd3; border-radius: 5px; }
+
+.editor { position: relative; grid-template-columns: minmax(0, 1fr); }
+.editor > .toolbar { grid-column: 1 / -1; grid-row: 1; }
+.editor > .stage { grid-column: 1; grid-row: 2; }
+.editor > .console { grid-column: 1 / -1; grid-row: 3; }
+.editor > .statusbar { grid-column: 1 / -1; grid-row: 4; }
+.editor > .contour-inspector {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  grid-column: 2;
+  grid-row: 2;
+  position: relative;
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+  border-left: 1px solid var(--line);
+  background: #fff;
+  z-index: 10;
+}
+.inspector-header { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; border-bottom: 1px solid var(--line); }
+.inspector-header h2 { font-size: 13px; font-weight: 550; margin: 0; }
+.inspector-content { min-height: 0; overflow-y: auto; padding: 18px 16px; }
+#inspectorName { display: block; width: 100%; height: 38px; padding: 8px 10px; border: 1px solid var(--input); border-radius: 5px; margin-bottom: 22px; }
+.contour-color-field { display: flex; align-items: center; gap: 10px; font: 11px var(--mono); color: var(--muted); }
+#inspectorColor { width: 42px; height: 34px; padding: 3px; border: 1px solid var(--line); border-radius: 5px; cursor: pointer; background: #fff; }
+.inspector-resize { position: absolute; left: -4px; top: 0; bottom: 0; width: 8px; z-index: 2; cursor: col-resize; touch-action: none; }
+.inspector-resize:hover, .inspector-resize:focus-visible { background: #13976826; outline: none; }
+.resizing-inspector, .resizing-inspector * { cursor: col-resize !important; user-select: none !important; }
+@media (min-width: 800px) {
+  .editor.inspector-open { grid-template-columns: minmax(0, 1fr) clamp(240px, var(--inspector-width, 240px), 30vw); }
+}
+@media (max-width: 799px) {
+  .editor > .contour-inspector { grid-column: 1; justify-self: end; width: 90vw; max-width: 90%; box-shadow: -8px 0 28px #263c3017; }
+  .inspector-resize { display: none; }
+}
+@media (max-width: 540px) {
+  .auth-layout { padding: 20px; }
+  .modal-card > [hlmCardHeader], .modal-card > [hlmCardContent], .modal-card > [hlmCardFooter] { padding-left: 16px; padding-right: 16px; }
+  .modal-card [hlmCardTitle] { font-size: 16px; }
+}
+
+/* The contextual inspector uses the same Card regions as dialogs. */
+.editor > .contour-inspector { grid-template-rows:minmax(0,1fr); }
+.inspector-card { display:grid;grid-template-rows:auto minmax(0,1fr) auto;min-height:0;height:100%;margin:0;border:0;border-radius:0;gap:0;background:#fff; }
+.inspector-content input:not([type=color]) { width:100%;height:38px;border:1px solid var(--input);border-radius:5px;background:#fff;padding:8px 10px;margin:0 0 16px;font-variant-numeric:tabular-nums; }
+.inspector-content #inspectorName { margin-bottom:20px; }
+.inspector-content .field-note { font-size:11px;line-height:1.5;color:var(--muted);margin:-6px 0 20px; }
+.inspector-field-pair {display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px;}
+.inspector-field-pair label {color:#536b5e;font-size:11px;display:flex;flex-direction:column;gap:8px;}
+.inspector-footer {display:flex;align-items:center;justify-content:flex-end;gap:8px;padding:12px 16px;border-top:1px solid var(--line);}
+.inspector-footer .secondary {font-size:12px;min-height:34px;gap:6px;}
+.contour-metrics {display:grid;grid-template-columns:auto 1fr;gap:10px;font-size:11px;border-top:1px solid var(--line);padding-top:20px;margin:22px 0 0;}
+.contour-metrics dt {color:var(--muted);} .contour-metrics dd {margin:0;text-align:right;font-variant-numeric:tabular-nums;}
+.form-error {font-size:12px;line-height:1.5;color:#b7473c;margin:12px 0 0;}
+.contour-context {position:fixed;z-index:80;width:220px;max-width:calc(100vw - 16px);}
+.contour-context [hlmDropdownMenu] {background:#fff;border:1px solid var(--line);border-radius:8px;box-shadow:0 6px 24px #263c3026;padding:5px;max-height:calc(100dvh - 16px);overflow:auto;}
+.contour-context [hlmDropdownMenuItem] {display:flex;align-items:center;gap:10px;width:100%;height:34px;padding:7px 10px;border-radius:4px;font-size:12px;text-align:left;outline:none;}
+.contour-context [hlmDropdownMenuItem] svg {flex-shrink:0;color:#769484;}
+.contour-context [hlmDropdownMenuItem]:focus,.contour-context [hlmDropdownMenuItem]:hover {background:var(--wash);color:var(--green-dark);}
+.contour-context [data-variant=destructive] {color:#b7473c;} .contour-context [data-variant=destructive] svg {color:inherit;}
+.menu-separator {height:1px;background:var(--line);margin:4px 3px;}
+#operationForm .special-angle input {background:var(--angle-wash);color:var(--angle-accent);border-color:var(--angle-border);}
+@media(max-width:799px){.editor > .contour-inspector {max-width:90vw;width:90vw;} }
+
+.inspector-content > .secondary {width:100%;font-size:11px;margin:0 0 22px;}

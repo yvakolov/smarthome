@@ -1,12 +1,14 @@
 
 import Konva from 'konva';
+import {editContour,isHandleEdit} from './contour-edit.js';
+import {resizeContour,moveContour,rotateContour} from './contour-transform.js';
 import {EPS,GEOM_TOL,finite,dist,equal,cross,sub,dot,det,along,signedArea,perimeter,validate,overlap,onSegment,intersects,pointLocation,interiorPoint,segmentEnters} from './geometry.js';
 /**
  * Isolated imperative interaction controller for the editor route.
  * Angular owns the application and controls; Konva owns only its stage subtree.
  * @param {HTMLElement} root
  * @param {import('../core/models').Project} project
- * @param {{save:(project: import('../core/models').Project)=>boolean}} callbacks
+ * @param {{save:(project: import('../core/models').Project)=>Promise<import('../core/models').Project|null>, selectContour:(contour:import('../core/models').Contour|null)=>void, contextMenu?:(menu:import('../core/models').ContourMenuPosition|null)=>void}} callbacks
  * @returns {import('../core/models').EditorHandle}
  */
 export function mountEditor(root,project,callbacks) {
@@ -25,7 +27,9 @@ export function mountEditor(root,project,callbacks) {
   const BASE_SCALE=.05;
   const INFER_PX = 9, DWELL_MS = 320; // Screen-space tolerance, independent of zoom.
   const I = {points:[],edge:null,pending:null,timer:null,hit:null,solution:null};
-  let T=null, menuReturnFocus=null, renameIndex=-1, lastFinish=0, dismissContext=false;
+  let T=null, menuReturnFocus=null, lastFinish=0, dismissContext=false;
+  let selectedId=null, saving=false, M=null, lastSelectionClick=null;
+  let editHover=null, editDrag=null;
 
   const S = {page:'home', id:null, name:'', points:[], contours:[], closed:false, active:false,
     tool:'graphical', rect:null, dir:null, raw:null, hover:null, pointer:false,
@@ -47,6 +51,8 @@ export function mountEditor(root,project,callbacks) {
     $('commandHint').classList.toggle('error',error); }
   function announceState() {
     if(T){message(temporaryHint());return;}
+    if(M){message(operationHint());return;}
+    if(selectedId&&!S.active){message('Вершина или ребро — переместить · + / Shift + щелчок по ребру — добавить точку');return;}
     if(!S.points.length&&S.contours.length){const last=S.contours.at(-1).points;
       message(`${S.contours.at(-1).name||'Контур '+S.contours.length}: ${fmt(Math.abs(signedArea(last))/1e6,2)} м² · ${fmt(perimeter(last)/1000,2)} м · ${last.length} сторон${S.active?' · Укажите начало.':''}`);
     }else if(!S.active)message(S.points.length?'Построение приостановлено. Нажмите «Контур», чтобы продолжить.':'Выберите инструмент «Контур».');
@@ -58,7 +64,9 @@ export function mountEditor(root,project,callbacks) {
   function syncToggle(id,on) {$(id).classList.toggle('on',on);$(id).setAttribute('aria-pressed',String(on));}
   function sync() {
     const editor=true;
-    $('stageHint').hidden=S.active||S.points.length>0||S.contours.length>0;
+    $('stageHint').hidden=S.active||!!M||S.points.length>0||S.contours.length>0;
+    $('operationForm').hidden=!(M&&M.phase==='target'&&!T);
+    if(M)syncOperationFields();
     $('originForm').hidden=!(S.active&&!S.points.length&&!T);
     $('lineForm').hidden=!(S.active&&S.tool==='graphical'&&S.points.length&&(S.dir||S.lineDraft)&&!T);
     $('rectForm').hidden=!(S.active&&S.rect);$('editor').classList.toggle('rectangle-entry',!!(S.active&&S.rect));
@@ -69,17 +77,18 @@ export function mountEditor(root,project,callbacks) {
     $('gridStep').disabled=!S.grid;
     $('gridStep').title=S.grid?'Шаг сетки, мм':'Включите сетку, чтобы изменить шаг';
     if(document.activeElement!==$('gridStep'))$('gridStep').value=String(S.step);
-    $('angleStepSetting').hidden=!(S.active&&S.tool==='rectangle');
+    $('angleStepSetting').hidden=!(S.active&&S.tool==='rectangle'||M?.kind==='rotate');
     if(document.activeElement!==$('angleStep'))$('angleStep').value=fieldNumber(S.angleStep);
     if(S.rect)syncRectangleFields();
     $('save').title=`Сохранить «${S.name}» в браузере (Ctrl/⌘ S)`;
     document.title=`${S.name} — Smart Home`;
     announceState();
+    notifySelection();
   }
   function clearEntry() {S.dir=null;S.lineDraft=false;S.draftDir=null;S.closeSnap=false;$('lineLength').value='';}
   function snapshot() {return clone({points:S.points,contours:S.contours,closed:S.closed,active:S.active,tool:S.tool,rect:S.rect});}
   function record() {S.history.push(snapshot());S.future=[];S.dirty=true;}
-  function restore(v) {T=null;hidePointMenu();Object.assign(S,clone(v));clearEntry();resetInference();S.hover=S.points.length?{...S.points.at(-1)}:null;
+  function restore(v) {releaseEditDrag();editHover=null;M=null;callbacks.contextMenu?.(null);T=null;hidePointMenu();Object.assign(S,clone(v));clearEntry();resetInference();S.hover=S.points.length?{...S.points.at(-1)}:null;
     if(S.rect){S.rect=normalizeRectangle(S.rect);updateRectangleHover();}
     sync();draw();canvas.focus({preventScroll:true});}
   function undo() {if(!S.history.length)return;S.future.push(snapshot());restore(S.history.pop());S.dirty=true;}
@@ -116,14 +125,14 @@ export function mountEditor(root,project,callbacks) {
     if(!S.active||S.tool==='rectangle')return false;
     return finishContour(S.points);
   }
-  function openMethods() {cancelTemporary(false);hidePointMenu();clearPending();$('methodDialog').showModal();}
+  function openMethods() {cancelOperation();clearSelection();cancelTemporary(false);hidePointMenu();clearPending();$('methodDialog').showModal();}
   function activate(tool) {
     // Changing a tool can discard only the unfinished draft, never completed contours.
     if(S.points.length&&S.tool!==tool){
       if(!confirm('Отменить незавершённое построение? Готовые контуры сохранятся.'))return;
       record();S.points=[];S.closed=false;S.rect=null;
     }
-    S.tool=tool;S.active=true;S.highlighted=-1;clearEntry();resetInference();$('methodDialog').close();sync();draw();canvas.focus({preventScroll:true});
+    selectedId=null;S.tool=tool;S.active=true;S.highlighted=-1;clearEntry();resetInference();$('methodDialog').close();sync();draw();canvas.focus({preventScroll:true});
     if(S.rect)updateRectangleHover();
   }
   function origin() {
@@ -323,6 +332,7 @@ export function mountEditor(root,project,callbacks) {
       if(Math.abs(normalizeAngle(angle-r.angle))>EPS)r.sourceEdge=null;
       r.angle=angle;r.rotationRef=null;updateRectangleHover();syncRectangleFields();
     }
+    if(M?.kind==='rotate'&&M.phase==='target'&&M.angleDraft===null&&S.raw)operationPreview(S.raw);
     announceState();draw();return true;
   }
 
@@ -352,7 +362,7 @@ export function mountEditor(root,project,callbacks) {
   }
   function trackReference(raw) {
     if(T||!$('pointMenu').hidden){clearPending();return;}
-    if(!S.active||S.rect||S.pan||S.lineDraft){clearPending();return;}
+    if((!S.active&&!M)||S.rect||S.pan||S.lineDraft||M?.phase==='base'){clearPending();return;}
     const hit=nearby(raw)[0];I.hit=hit||null;
     if(!hit){clearPending();return;}
     const acquired=hit.kind==='edge'?I.edge?.key===hit.key:I.points.some(p=>p.key===hit.key);
@@ -361,7 +371,7 @@ export function mountEditor(root,project,callbacks) {
     clearPending();I.pending=hit;
     I.timer=schedule(()=>{
       const current=I.pending;I.pending=null;I.timer=null;
-      if(!current||!S.active||!S.pointer||S.page!=='editor'||$('methodDialog').open||$('helpDialog').open)return;
+      if(!current||(!S.active&&!M)||!S.pointer||S.page!=='editor'||document.querySelector('dialog[open]'))return;
       acquireReference(current);
       if(S.raw)preview(S.raw);draw();
     },DWELL_MS);
@@ -400,7 +410,12 @@ export function mountEditor(root,project,callbacks) {
     const compatible=p=>!constraint||(Math.abs(det(sub(p,anchor),constraint))<1e-5&&dot(sub(p,anchor),constraint)>=-EPS);
     const candidates=[];
     const add=(p,rank,label,kind,guides=[])=>{
-      const distance=dist(probe,p);if(distance<=tol&&compatible(p))candidates.push({p,rank,distance,label,kind,guides});};
+      const onGrid=!S.snap||(Math.abs(p.x-Math.round(p.x/S.step)*S.step)<GEOM_TOL&&Math.abs(p.y-Math.round(p.y/S.step)*S.step)<GEOM_TOL);
+      const acquiredPoint=I.points.some(ref=>equal(ref.p,p));
+      const acquiredEdge=I.edge&&onSegment(I.edge.a,I.edge.b,p);
+      const explicitGuide=guides.some(g=>g.kind!=='axis');
+      const permitted=onGrid||acquiredPoint||acquiredEdge||explicitGuide;
+      const distance=dist(probe,p);if(permitted&&distance<=tol&&compatible(p))candidates.push({p,rank,distance,label,kind,guides});};
     for(const hit of nearby(raw))add(hit.p,hit.rank,hit.kind==='vertex'?'Точка':hit.kind==='midpoint'?'Середина':'На ребре',hit.kind);
     const guides=referenceGuides(anchor),axis=constraint?{p:anchor,u:constraint}:null;
     for(const guide of guides){
@@ -421,8 +436,10 @@ export function mountEditor(root,project,callbacks) {
     if(candidates.length){I.solution=candidates[0];return {...I.solution.p};}
     return base;
   }
+  const gridPoint=p=>S.snap?{x:Math.round(p.x/S.step)*S.step,y:Math.round(p.y/S.step)*S.step}:{...p};
   function preview(raw) {
     if(T){temporaryPreview(raw);return;}
+    if(M){operationPreview(raw);return;}
     S.raw={...raw};S.closeSnap=false;I.solution=null;
     if(S.active&&S.rect){previewRectangle(raw);return;}
     let p={...raw};
@@ -443,11 +460,23 @@ export function mountEditor(root,project,callbacks) {
   }
   function rectPoints() {return S.rect&&S.points.length?rectangleVertices(S.points[0],S.rect):[];}
   function projectData(){return {id:S.id,name:S.name,sequence:project.sequence,points:clone(S.points),closed:false,contours:clone(S.contours),draft:{points:clone(S.points),tool:S.tool,rect:clone(S.rect)},units:'mm',updatedAt:new Date().toISOString(),settings:{grid:S.grid,snap:S.snap,ortho:S.ortho,step:S.step,angleStep:S.angleStep,mode:S.mode}};}
-  function save(){
-    const current=projectData(),local=callbacks.save(current);
-    if(!local){const blob=new Blob([JSON.stringify({format:'smart-home',version:1,projects:[current]},null,2)],{type:'application/json'});const url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=`Smart-Home-${S.name.replace(/\s/g,'-')}.json`;a.click();schedule(()=>URL.revokeObjectURL(url),1000);}
-    S.dirty=false;$('save').classList.add('saved-flash');schedule(()=>$('save').classList.remove('saved-flash'),1000);
-    message(local?`«${S.name}» сохранён в этом браузере.`:'Хранилище недоступно. Проект выгружен в JSON.');
+  async function save(){
+    if(saving||disposed)return;
+    if(M){message('Сначала подтвердите или отмените преобразование.',true);return;}
+    saving=true;$('save').disabled=true;
+    const current=projectData();
+    const content=p=>JSON.stringify({points:p.points,contours:p.contours,draft:p.draft,settings:p.settings});
+    try {
+      const committed=await callbacks.save(current);
+      if(disposed||!committed)return; // Cancelling first-save naming never creates a project.
+      S.name=committed.name;
+      // Editing during an asynchronous update must not be marked as saved accidentally.
+      S.dirty=content(projectData())!==content(committed);
+      sync();$('save').classList.add('saved-flash');schedule(()=>$('save').classList.remove('saved-flash'),1000);
+      message(S.dirty?'Сохранена предыдущая версия. Есть новые изменения.':`«${S.name}» сохранён в этом браузере.`);
+    } catch(error) {
+      if(!disposed)message(error instanceof Error?error.message:'Не удалось сохранить проект. Изменения остаются в редакторе.',true);
+    } finally {saving=false;if(!disposed)$('save').disabled=false;}
   }
   function contourAt(raw) {
     for(let i=S.contours.length-1;i>=0;i--){const ps=S.contours[i].points;
@@ -456,17 +485,217 @@ export function mountEditor(root,project,callbacks) {
         const t=Math.max(0,Math.min(dist(a,b),dot(sub(raw,a),u)));if(dist(raw,along(a,u,t))*S.scale<=7)return i;}
     }return -1;
   }
-  function renameContour(raw) {
-    if(S.active||performance.now()-lastFinish<300)return;
-    const i=contourAt(raw);if(i<0)return;renameIndex=i;
-    $('contourName').value=S.contours[i].name||'';$('renameDialog').showModal();
-    $('contourName').focus();$('contourName').select();
+  function notifySelection() {
+    const contour=!S.active&&selectedId?S.contours.find(c=>c.id===selectedId):null;
+    if(!contour)selectedId=null;
+    callbacks.selectContour?.(contour?clone(contour):null);
   }
-  function commitName(e) {
-    e.preventDefault();if(renameIndex<0||!S.contours[renameIndex])return;
-    const name=$('contourName').value.trim();
-    if(name!==S.contours[renameIndex].name){record();S.contours[renameIndex].name=name;}
-    $('renameDialog').close();renameIndex=-1;sync();draw();canvas.focus({preventScroll:true});
+  function selectContour(raw) {
+    if(S.active)return;
+    const position=screen(raw),now=performance.now();
+    // Opening the inspector resizes the canvas. A second click at the same screen
+    // position must not select empty space because the world origin just moved.
+    if(lastSelectionClick&&now-lastSelectionClick.time<450&&dist(position,lastSelectionClick.position)<5&&S.contours.some(c=>c.id===lastSelectionClick.id)){
+      selectedId=lastSelectionClick.id;
+    }else{const index=contourAt(raw);selectedId=index<0?null:S.contours[index].id;}
+    lastSelectionClick=selectedId?{id:selectedId,time:now,position}:null;
+    notifySelection();announceState();draw();
+  }
+  function clearSelection() {if(M)cancelOperation();editHover=null;selectedId=null;lastSelectionClick=null;callbacks.contextMenu?.(null);notifySelection();draw();}
+  function updateContour(id,changes) {
+    const index=S.contours.findIndex(c=>c.id===id);if(index<0||S.active||M)return 'Сначала завершите текущее действие.';
+    const current=S.contours[index],next=clone(current);
+    if(typeof changes.name==='string')next.name=changes.name.trim().slice(0,80);
+    if(typeof changes.color==='string'){
+      if(!/^#[0-9a-f]{6}$/i.test(changes.color))return 'Укажите цвет в формате #RRGGBB.';
+      next.color=changes.color.toLowerCase();
+    }
+    if(JSON.stringify(next)!==JSON.stringify(current)){record();S.contours[index]=next;sync();draw();}
+    return null;
+  }
+  // Operations keep an immutable source snapshot until a single explicit commit.
+  // Hovering or cancelling never writes geometry and never adds history entries.
+  function openContourMenu(raw,position) {
+    if(S.active||M)return;
+    const index=contourAt(raw);
+    if(index<0){callbacks.contextMenu?.(null);return;}
+    selectedId=S.contours[index].id;notifySelection();draw();
+    callbacks.contextMenu?.({id:selectedId,x:position.x,y:position.y});
+  }
+  function operationError(points) {
+    const error=validate(points);if(error)return error;
+    const conflicts=S.contours.filter(c=>!M||M.kind==='duplicate'||c.id!==M.id);
+    return conflicts.some(c=>overlap(points,c.points))?'Контуры не должны пересекаться или перекрывать площадь.':null;
+  }
+  function operationHint() {
+    if(!M)return '';
+    const name={move:'Переместить',duplicate:'Дублировать',rotate:'Повернуть',vertex:'Переместить вершину',edge:'Переместить ребро',insert:'Добавить вершину'}[M.kind];
+    return `${name} · `+(M.phase==='base'
+      ? (M.kind==='rotate'?'Выберите центр вращения на контуре':'Выберите опорную точку на контуре')
+      : M.kind==='rotate'?'Мышь / угол → Enter или ЛКМ · Esc — отмена'
+        :'Цель · стрелка → расстояние · P / колесо — временные точки · Enter / ЛКМ · Esc — отмена');
+  }
+  function startOperation(kind,id=selectedId) {
+    const source=S.contours.find(c=>c.id===id);if(!source||S.active||saving)return;
+    callbacks.contextMenu?.(null);
+    if(kind==='edit'){selectedId=id;sync();draw();canvas.focus({preventScroll:true});return;}
+    if(kind==='delete'){
+      record();S.contours=S.contours.filter(c=>c.id!==id);selectedId=null;
+      clearEntry();resetInference();sync();draw();return;
+    }
+    if(!['move','duplicate','rotate'].includes(kind))return;
+    selectedId=id;clearEntry();resetInference();
+    M={kind,id,source:clone(source),phase:'base',base:null,probe:null,projection:clone(source.points),
+      angle:0,angleDraft:null,referenceHeading:null,dir:null,distanceDraft:null,error:null};
+    $('operationAngle').value='0';$('operationDistance').value='';
+    sync();draw();canvas.focus({preventScroll:true});
+  }
+  function pointOnOperationContour(raw) {
+    const points=M.source.points,tolerance=INFER_PX/S.scale,candidates=[];
+    for(const p of points)if(dist(p,raw)<=tolerance)candidates.push({p,rank:0,d:dist(p,raw)});
+    for(let i=0;i<points.length;i++){
+      const a=points[i],b=points[(i+1)%points.length],u=edgeDirection({a,b});if(!u)continue;
+      const length=dist(a,b),mid={x:(a.x+b.x)/2,y:(a.y+b.y)/2};
+      if(dist(mid,raw)<=tolerance)candidates.push({p:mid,rank:1,d:dist(mid,raw)});
+      let t=Math.max(0,Math.min(length,dot(sub(raw,a),u)));
+      let p=along(a,u,t);
+      if(dist(p,raw)<=tolerance){
+        if(S.snap)t=Math.max(0,Math.min(length,Math.round(t/S.step)*S.step));
+        p=along(a,u,t);candidates.push({p,rank:2,d:dist(p,raw)});
+      }
+    }
+    return candidates.sort((a,b)=>a.rank-b.rank||a.d-b.d)[0]?.p||null;
+  }
+  // All polygon types share the same on-canvas handles. A rectangle is not a special editor.
+  function editHit(raw,forceInsert=false) {
+    const contour=S.contours.find(c=>c.id===selectedId);if(!contour)return null;
+    const ps=contour.points,tol=9/S.scale;
+    for(let i=0;i<ps.length;i++)if(dist(raw,ps[i])<=tol)return {kind:'vertex',index:i,p:{...ps[i]}};
+    let nearest=null;
+    for(let i=0;i<ps.length;i++){
+      const a=ps[i],b=ps[(i+1)%ps.length],length=dist(a,b);if(length<EPS)continue;
+      const u=edgeDirection({a,b}),t=Math.max(0,Math.min(length,dot(sub(raw,a),u))),p=along(a,u,t),d=dist(raw,p);
+      const mid=along(a,u,length/2);
+      if(length*S.scale>34&&dist(raw,mid)<=7/S.scale&&!forceInsert)return {kind:'insert',index:i,p:mid};
+      if(d<=tol&&(!nearest||d<nearest.d))nearest={kind:forceInsert?'insert':'edge',index:i,p,d};
+    }
+    return nearest;
+  }
+  function releaseEditDrag() {
+    const drag=editDrag;editDrag=null;
+    if(drag&&canvas.hasPointerCapture(drag.id))canvas.releasePointerCapture(drag.id);
+  }
+  function beginHandleEdit(hit,event) {
+    const source=S.contours.find(c=>c.id===selectedId);if(!source||saving)return;
+    clearEntry();resetInference();callbacks.contextMenu?.(null);
+    M={kind:hit.kind,index:hit.index,id:source.id,source:clone(source),phase:'target',base:clone(hit.p),probe:clone(hit.p),
+      projection:clone(source.points),angle:0,angleDraft:null,referenceHeading:null,dir:null,distanceDraft:null,error:null};
+    $('operationDistance').value='';
+    operationPreview(hit.p,hit.p);
+    if(event){editDrag={id:event.pointerId,start:mouse(event),moved:false};canvas.setPointerCapture(event.pointerId);}
+    sync();draw();canvas.focus({preventScroll:true});
+  }
+  function drawEditHandles() {
+    if(S.active||!selectedId||T)return;
+    const source=S.contours.find(c=>c.id===selectedId);if(!source)return;
+    const ps=(M?.id===selectedId?M.projection:source.points).map(screen),color=M?.error?'#b7473c':source.color||'#139768';
+    for(let i=0;i<ps.length;i++){
+      const a=ps[i],b=ps[(i+1)%ps.length];
+      if(!M&&editHover?.kind==='edge'&&editHover.index===i)line(a,b,color,3);
+      ctx.beginPath();ctx.arc(a.x,a.y,5,0,2*Math.PI);ctx.fillStyle='#fff';ctx.fill();ctx.strokeStyle=color;ctx.lineWidth=1.7;ctx.stroke();
+      if(!M&&dist(a,b)>34){
+        const x=(a.x+b.x)/2,y=(a.y+b.y)/2;
+        ctx.fillStyle='#fff';ctx.fillRect(x-5,y-5,10,10);ctx.strokeStyle=color;ctx.lineWidth=1;ctx.strokeRect(x-5,y-5,10,10);
+        line({x:x-3,y},{x:x+3,y},color,1);line({x,y:y-3},{x,y:y+3},color,1);
+      }
+    }
+  }
+  function operationPreview(raw,exactTarget=null) {
+    if(!M)return;S.raw={...raw};I.solution=null;
+    if(M.phase==='base'){
+      M.probe=exactTarget||pointOnOperationContour(raw);S.hover=M.probe||gridPoint(raw);coords(S.hover);return;
+    }
+    let target;
+    if(M.kind==='rotate'){
+      if(M.angleDraft!==null){const angle=parse(M.angleDraft);if(finite(angle))M.angle=angle;}
+      else {
+        const delta=sub(raw,M.base),radius=Math.hypot(delta.x,delta.y);
+        if(radius*S.scale>10){const heading=Math.atan2(delta.y,delta.x)*180/Math.PI;
+          if(M.referenceHeading===null)M.referenceHeading=heading;
+          M.angle=snapRectangleAngle(normalizeAngle(heading-M.referenceHeading));}
+      }
+      M.projection=rotateContour(M.source.points,M.base,M.angle);
+      target=raw;
+    }else{
+      target=exactTarget||gridPoint(raw);
+      if(!exactTarget){
+        let constraint=M.dir;
+        if(!constraint&&S.ortho)constraint=Math.abs(raw.x-M.base.x)>=Math.abs(raw.y-M.base.y)?{x:raw.x>=M.base.x?1:-1,y:0}:{x:0,y:raw.y>=M.base.y?1:-1};
+        if(constraint){const n=parse(M.distanceDraft??'');
+          target=along(M.base,constraint,M.dir&&positive(n)?n:Math.max(0,dot(sub(target,M.base),constraint)));
+          if(!(M.dir&&positive(n)))target=infer(raw,target,M.base,constraint);
+        }else target=infer(raw,target,M.base,null);
+      }
+      M.projection=isHandleEdit(M.kind)?editContour(M.source.points,M.kind,M.index,M.base,target):moveContour(M.source.points,M.base,target);
+    }
+    M.probe=target;S.hover=target;coords(target);M.error=operationError(M.projection);
+    syncOperationFields();
+  }
+  function syncOperationFields() {
+    if(!M)return;
+    $('operationForm').dataset.phase=M.phase;
+    $('operationAngleLabel').hidden=M.kind!=='rotate';
+    $('operationDistanceLabel').hidden=M.kind==='rotate'||!M.dir;
+    const special=M.kind==='rotate'&&specialRectangleAngle(M.angle)!==null;
+    $('operationAngleLabel').classList.toggle('special-angle',special);
+    if(M.kind==='rotate'&&M.angleDraft===null)$('operationAngle').value=fieldNumber(M.angle);
+    $('operationDirection').textContent=M.dir?.label||'';
+  }
+  function commitOperation(raw=null) {
+    if(!M)return false;
+    if(raw)operationPreview(raw);
+    if(M.phase==='base'){
+      if(!M.probe){message('Выберите вершину или точку на границе выбранного контура.',true);return;}
+      M.base={...M.probe};M.phase='target';M.referenceHeading=null;M.error=null;
+      sync();draw();
+      if(M.kind==='rotate'){$('operationAngle').focus({preventScroll:true});$('operationAngle').select();}
+      return;
+    }
+    if(M.kind==='rotate'&&M.angleDraft!==null&&!finite(parse(M.angleDraft))){message('Введите угол числом.',true);return;}
+    if(M.distanceDraft!==null&&!positive(parse(M.distanceDraft))){message('Расстояние должно быть больше нуля.',true);return;}
+    const error=operationError(M.projection);if(error){M.error=error;message(error,true);draw();return;}
+    const operation=M,changed=operation.projection.length!==operation.source.points.length||operation.projection.some((p,i)=>!equal(p,operation.source.points[i]));
+    if(operation.kind==='duplicate'||changed){
+      record();
+      const next={...clone(operation.source),points:clone(operation.projection)};
+      if(operation.kind==='duplicate'){
+        next.id=crypto.randomUUID();next.name=next.name?`${next.name} — копия`:'';
+        S.contours.push(next);selectedId=next.id;
+      }else S.contours=S.contours.map(c=>c.id===operation.id?next:c);
+    }
+    releaseEditDrag();editHover=null;M=null;T=null;hidePointMenu();clearEntry();resetInference();sync();draw();canvas.focus({preventScroll:true});return true;
+  }
+  function cancelOperation() {
+    if(!M)return;releaseEditDrag();editHover=null;M=null;T=null;hidePointMenu();clearEntry();resetInference();sync();draw();canvas.focus({preventScroll:true});
+  }
+  function drawOperation() {
+    if(!M)return;
+    const color=M.error?'#b7473c':(M.source.color||'#139768');
+    const points=M.projection.map(screen);
+    if(points.length){ctx.beginPath();ctx.moveTo(points[0].x,points[0].y);points.slice(1).forEach(p=>ctx.lineTo(p.x,p.y));ctx.closePath();
+      ctx.fillStyle=color+'16';ctx.fill();
+      for(let i=0;i<points.length;i++)line(points[i],points[(i+1)%points.length],color,2,[6,4]);}
+    if(M.base){const a=screen(M.base);ctx.beginPath();ctx.arc(a.x,a.y,5,0,2*Math.PI);ctx.strokeStyle=color;ctx.lineWidth=2;ctx.stroke();
+      if(M.probe&&M.kind!=='rotate'){const b=screen(M.probe);line(a,b,color,1,[4,4]);dimensions(a,b,fmt(dist(M.base,M.probe),2),true);}
+      if(M.kind==='rotate'){
+        const text=`${fmt(M.angle,2)}°`,special=specialRectangleAngle(M.angle)!==null;
+        const t=M.angle*Math.PI/180,r=42;
+        line(a,{x:a.x+r+10,y:a.y},color,1,[3,3]);
+        line(a,{x:a.x+(r+10)*Math.cos(t),y:a.y-(r+10)*Math.sin(t)},color,1);
+        ctx.beginPath();ctx.arc(a.x,a.y,r,0,-t,t>0);ctx.strokeStyle=special?'#6752a3':color;ctx.lineWidth=1.5;ctx.stroke();
+        label(text,a.x+60,a.y-25,true);
+      }
+    }else if(M.probe){const p=screen(M.probe);ctx.beginPath();ctx.arc(p.x,p.y,6,0,2*Math.PI);ctx.strokeStyle=color;ctx.stroke();}
   }
   function resize(reset=false) {
     if(S.page!=='editor')return;const r=$('stage').getBoundingClientRect();if(!r.width||!r.height)return;
@@ -500,14 +729,14 @@ export function mountEditor(root,project,callbacks) {
     if(Math.hypot(dx,dy)<36)return;
     label(text,(a.x+b.x)/2+(Math.abs(dx)<1?-19:0),(a.y+b.y)/2+(Math.abs(dx)<1?0:19),active,Math.abs(dx)<1?-Math.PI/2:0);
   }
-  function drawOutline(model,closed,rectangle) {
+  function drawOutline(model,closed,rectangle,color='#139768') {
     const ps=model.map(screen);if(!ps.length)return;
-    if(closed&&ps.length>=3){ctx.beginPath();ctx.moveTo(ps[0].x,ps[0].y);ps.slice(1).forEach(p=>ctx.lineTo(p.x,p.y));ctx.closePath();ctx.fillStyle=rectangle?'#13976807':'#13976812';ctx.fill();}
+    if(closed&&ps.length>=3){ctx.beginPath();ctx.moveTo(ps[0].x,ps[0].y);ps.slice(1).forEach(p=>ctx.lineTo(p.x,p.y));ctx.closePath();ctx.fillStyle=rectangle?'#13976807':color+'12';ctx.fill();}
     for(let i=1;i<ps.length+(closed?1:0);i++){
       const a=ps[(i-1)%ps.length],b=ps[i%ps.length];
       const active=rectangle&&((S.rect.stage==='width'&&i===1)||(S.rect.stage==='height'&&i===2));
       const rotating=rectangle&&S.rect.stage==='rotation';
-      line(a,b,rotating?'#139768':active?'#139768':rectangle?'#93b9a2':'#139768',active?2.8:rotating?1.8:rectangle?1.3:1.8,rectangle&&!active?[5,4]:[]);
+      line(a,b,rotating?'#139768':active?'#139768':rectangle?'#93b9a2':color,active?2.8:rotating?1.8:rectangle?1.3:1.8,rectangle&&!active?[5,4]:[]);
       if(rectangle&&i<=2)rectangleDimension(a,b,model,i,active);
       else if(!rectangle)dimensions(a,b,fmt(dist(model[(i-1)%ps.length],model[i%ps.length]),2),active);
     }
@@ -557,11 +786,13 @@ export function mountEditor(root,project,callbacks) {
   }
 
   function drawInference() {
-    if(!S.active||S.rect||T)return;
+    if((!S.active&&!M)||S.rect||T)return;
     const color='#6960a3';
     if(I.edge)line(screen(I.edge.a),screen(I.edge.b),color,2.7);
     for(const ref of I.points){const p=screen(ref.p);ctx.beginPath();ctx.arc(p.x,p.y,6,0,Math.PI*2);ctx.strokeStyle=color;ctx.lineWidth=1.5;ctx.stroke();}
-    for(const guide of [...pairedGuides(),...(I.solution?.guides||[])]){const p=screen(guide.p),u={x:guide.u.x,y:-guide.u.y},extent=Math.hypot(S.w,S.h)*2;
+    const pointAxes=I.points.flatMap(ref=>[{p:ref.p,u:{x:1,y:0}},{p:ref.p,u:{x:0,y:1}}]);
+    const edgeAxis=I.edge?[{p:I.edge.a,u:edgeDirection(I.edge)}]:[];
+    for(const guide of [...pointAxes,...edgeAxis,...pairedGuides(),...(I.solution?.guides||[])]){const p=screen(guide.p),u={x:guide.u.x,y:-guide.u.y},extent=Math.hypot(S.w,S.h)*2;
       // The source can be far offscreen. Project to the canvas centre before extending.
       const c={x:S.w/2,y:S.h/2},origin=along(p,u,dot(sub(c,p),u));
       line(along(origin,u,-extent),along(origin,u,extent),color,1,[6,5]);}
@@ -590,8 +821,8 @@ export function mountEditor(root,project,callbacks) {
     line({x:28,y:S.h-27},{x:53,y:S.h-27},'#a3b9aa');line({x:28,y:S.h-27},{x:28,y:S.h-52},'#a3b9aa');
     ctx.fillStyle='#8ca996';ctx.font='9px ui-monospace,monospace';ctx.fillText('X',57,S.h-24);ctx.fillText('Y',25,S.h-59);
     for(const [index,contour] of S.contours.entries()){
-      drawOutline(contour.points,true,false);
-      if(!S.active&&index===S.highlighted){for(let i=0;i<contour.points.length;i++)line(screen(contour.points[i]),screen(contour.points[(i+1)%contour.points.length]),'#08774f',2.5);}
+      drawOutline(contour.points,true,false,contour.color||'#139768');
+      if(!S.active&&(index===S.highlighted||contour.id===selectedId)){for(let i=0;i<contour.points.length;i++)line(screen(contour.points[i]),screen(contour.points[(i+1)%contour.points.length]),contour.color||'#08774f',2.5);}
       if(contour.name){const anchor=interiorPoint(contour.points);if(anchor){const p=screen(anchor);label(contour.name,p.x,p.y,true);}}
     }
     drawRectangleReference();drawOutline(S.rect?rectPoints():S.points,!!S.rect,!!S.rect);
@@ -599,7 +830,7 @@ export function mountEditor(root,project,callbacks) {
       line(a,b,externalError([S.points.at(-1),S.hover])?'#b7473c':I.solution?'#6960a3':'#139768',1.5,[6,4]);dimensions(a,b,fmt(dist(S.points.at(-1),S.hover),2),!!S.dir||S.ortho);
     }
     S.points.map(screen).forEach((p,i)=>{ctx.beginPath();ctx.arc(p.x,p.y,i===0?3.3:2.5,0,Math.PI*2);ctx.fillStyle='#fff';ctx.fill();ctx.lineWidth=1.2;ctx.strokeStyle='#139768';ctx.stroke();});
-    drawInference();drawTemporary();
+    drawOperation();drawEditHandles();drawInference();drawTemporary();
 
     // Full-canvas targeting crosshair at the resolved (snapped/constrained) point.
     if(S.hover&&(S.pointer||S.dir||S.rect)){
@@ -615,9 +846,10 @@ export function mountEditor(root,project,callbacks) {
   // Temporary-point commands resolve one pending point. No helper is stored as BIM/model geometry.
   const TEMP_LABELS={area:'Точка пересечения',lines:'Точка пересечения двух линий',midpoint:'Средняя точка',twoPoints:'Точка + точка пополам',edge:'Точка на кромке'};
   function pairedGuides() {
-    if(!I.edge||!I.points.length||!S.points.length)return [];
+    const anchor=M?.base||S.points.at(-1);
+    if(!I.edge||!I.points.length||!anchor)return [];
     const u=edgeDirection(I.edge),ref=I.points.at(-1).p;
-    return [{p:S.points.at(-1),u,label:'Параллельно',kind:'parallel'},
+    return [{p:anchor,u,label:'Параллельно',kind:'parallel'},
       {p:ref,u:{x:-u.y,y:u.x},label:'Перпендикуляр от точки',kind:'point-perpendicular'}];
   }
   function hidePointMenu(focus=false) {
@@ -625,7 +857,8 @@ export function mountEditor(root,project,callbacks) {
     if(focus){const target=menuReturnFocus;target&&target.isConnected&&target.offsetParent?target.focus({preventScroll:true}):canvas.focus({preventScroll:true});}
   }
   function openPointMenu(x,y) {
-    if(S.page!=='editor'||!S.active||S.rect){message('Временные точки доступны во время выбора точки контура.');return;}
+    if(S.page!=='editor'||(!S.active&&!M)||S.rect){message('Временные точки доступны во время выбора точки контура.');return;}
+    releaseEditDrag();
     clearPending();menuReturnFocus=document.activeElement;
     const r=canvas.getBoundingClientRect(),p=S.hover?screen(S.hover):{x:S.w/2,y:S.h/2};
     x=x??(r.left+p.x);y=y??(r.top+p.y);
@@ -654,16 +887,16 @@ export function mountEditor(root,project,callbacks) {
     return prefix+(T.edges.length?'Точка движется по выбранному ребру · щелчок / Enter':'Выберите ребро');
   }
   function startTemporary(mode) {
-    if(!TEMP_LABELS[mode]||!S.active||S.rect)return;
+    if(!TEMP_LABELS[mode]||(!S.active&&!M)||S.rect)return;
     hidePointMenu();cancelTemporary(false);
-    const saved={dir:clone(S.dir),lineDraft:S.lineDraft,draftDir:clone(S.draftDir),value:$('lineLength').value};
+    const saved={dir:clone(S.dir),lineDraft:S.lineDraft,draftDir:clone(S.draftDir),value:$('lineLength').value,inference:{points:clone(I.points),edge:clone(I.edge)}};
     clearEntry();resetInference();
     T={mode,phase:'select',edges:[],points:[],candidate:null,candidates:[],areaStart:null,areaEnd:null,edgeHover:null,saved};
     sync();draw();canvas.focus({preventScroll:true});
   }
   function cancelTemporary(restore=true) {
     if(!T)return;const saved=T.saved;T=null;
-    if(restore&&saved){S.dir=saved.dir;S.lineDraft=saved.lineDraft;S.draftDir=saved.draftDir;$('lineLength').value=saved.value;}
+    if(restore&&saved){S.dir=saved.dir;S.lineDraft=saved.lineDraft;S.draftDir=saved.draftDir;$('lineLength').value=saved.value;I.points=saved.inference.points;I.edge=saved.inference.edge;}
     sync();if(S.raw)preview(S.raw);draw();canvas.focus({preventScroll:true});
   }
   function pointForPick(raw) {
@@ -698,6 +931,21 @@ export function mountEditor(root,project,callbacks) {
   function commitTemporary(p) {
     if(!p||!finite(p.x)||!finite(p.y))return false;
     const state=T;T=null;
+    if(M){
+      if(M.phase==='base'&&!M.source.points.some((a,i)=>onSegment(a,M.source.points[(i+1)%M.source.points.length],p))){
+        T=state;message('Опорная точка должна находиться на выбранном контуре.',true);return false;
+      }
+      M.dir=null;M.distanceDraft=null;
+      if(M.kind==='rotate'&&M.phase==='target'){
+        const delta=sub(p,M.base);if(dist(p,M.base)<GEOM_TOL){T=state;message('Направление не определено в центре поворота.',true);return false;}
+        M.angleDraft=fieldNumber(Math.atan2(delta.y,delta.x)*180/Math.PI);
+      }
+      operationPreview(p,p);
+      const basePhase=M.phase==='base';
+      const committed=commitOperation();
+      if(M&&!basePhase){T=state;sync();message(M.error||'Точку нельзя использовать. Выберите другую.',true);draw();return false;}
+      sync();draw();return basePhase||committed;
+    }
     const referenceEdge=state?.mode==='edge'?state.edges[0]:state?.mode==='midpoint'?state.edgeHover:null;
     if(!append(p,referenceEdge)){const error=$('commandHint').textContent;T=state;sync();message(error,true);draw();return false;}
     const q=screen(p);if(q.x<20||q.x>S.w-20||q.y<20||q.y>S.h-20){S.ox=S.w*.4-p.x*S.scale;S.oy=S.h*.6+p.y*S.scale;draw();}
@@ -754,18 +1002,18 @@ export function mountEditor(root,project,callbacks) {
   // Toolbar, modal and document actions.
   listen($('pointMenu'),'contextmenu',e=>e.preventDefault());
   root.querySelectorAll('[data-point]').forEach(button=>listen(button,'click',()=>startTemporary(button.dataset.point)));
-  listen($('renameForm'),'submit',commitName);
-  for(const id of ['cancelRename','closeRename'])listen($(id),'click',()=>$('renameDialog').close());
-  listen($('renameDialog'),'close',()=>{renameIndex=-1;canvas.focus({preventScroll:true});});
   listen(document,'pointerdown',e=>{if(!$('pointMenu').hidden&&!$('pointMenu').contains(e.target))hidePointMenu();});
   listen(window,'resize',()=>hidePointMenu());
   listen($('save'),'click',save);listen($('undo'),'click',undo);listen($('redo'),'click',redo);
   listen($('contourTool'),'click',openMethods);listen($('beginContour'),'click',openMethods);
   listen($('graphicalTool'),'click',()=>activate('graphical'));listen($('rectangleTool'),'click',()=>activate('rectangle'));
-  listen($('closeMethods'),'click',()=>$('methodDialog').close());
+  for(const id of ['closeMethods','cancelMethods'])listen($(id),'click',()=>$('methodDialog').close());
   listen($('originForm'),'submit',e=>{e.preventDefault();origin();});
   listen($('lineForm'),'submit',e=>{e.preventDefault();buildLength();});
   listen($('rectForm'),'submit',e=>{e.preventDefault();commitRectangle();});
+  listen($('operationForm'),'submit',e=>{e.preventDefault();commitOperation();});
+  listen($('operationAngle'),'input',()=>{if(M){M.angleDraft=$('operationAngle').value;operationPreview(S.raw||M.base);draw();}});
+  listen($('operationDistance'),'input',()=>{if(M){M.distanceDraft=$('operationDistance').value;operationPreview(S.raw||M.base);draw();}});
   listen($('lineLength'),'input',()=>{if(S.points.length)preview(S.raw||S.points.at(-1));draw();});
   for(const side of ['width','height']){
     const input=$(RECT_FIELDS[side].id);listen(input,'focus',()=>{selectRectangleSide(side);input.select();});
@@ -782,6 +1030,7 @@ export function mountEditor(root,project,callbacks) {
   listen($('angleStep'),'keydown',e=>{if(e.key==='Enter'||e.code==='NumpadEnter'){
     e.preventDefault();if(commitAngleStep()){
       if(S.rect?.stage==='rotation'){$('rectAngle').focus({preventScroll:true});$('rectAngle').select();}
+      else if(M?.kind==='rotate'&&M.phase==='target'){$('operationAngle').focus({preventScroll:true});$('operationAngle').select();}
       else canvas.focus({preventScroll:true});
     }
   }});
@@ -801,10 +1050,15 @@ export function mountEditor(root,project,callbacks) {
     if(e.button===1){e.preventDefault();clearPending();S.middle={p:mouse(e),ox:S.ox,oy:S.oy,id:e.pointerId};canvas.setPointerCapture(e.pointerId);return;}
     if(e.button===0&&S.space){e.preventDefault();S.pan={p:mouse(e),ox:S.ox,oy:S.oy,id:e.pointerId};canvas.setPointerCapture(e.pointerId);canvas.style.cursor='grabbing';return;}
     if(e.button!==0)return;e.preventDefault();hidePointMenu();canvas.focus({preventScroll:true});S.pointer=true;
-    if(!S.active)return;
     const raw=world(mouse(e));
     if(T){if(T.mode==='area'&&T.phase==='select'){T.areaStart=raw;T.areaEnd=raw;canvas.setPointerCapture(e.pointerId);draw();}else temporaryClick(raw);return;}
-    if(e.altKey&&!S.rect){pinReference(raw);return;}
+    if(e.altKey&&!S.rect&&(S.active||M)){pinReference(raw);return;}
+    if(M){operationPreview(raw);commitOperation();return;}
+    if(!S.active){
+      const hit=editHit(raw,e.shiftKey);
+      if(hit){beginHandleEdit(hit,e);return;}
+      selectContour(raw);return;
+    }
     if(S.rect){preview(raw);commitRectangle();return;}
     preview(raw);
     const referenceEdge=S.tool==='rectangle'&&!S.points.length&&['edge','midpoint'].includes(I.solution?.kind)?nearby(raw).find(h=>h.edge&&equal(h.p,S.hover))?.edge:null;
@@ -816,10 +1070,13 @@ export function mountEditor(root,project,callbacks) {
     if(S.pan){S.ox=S.pan.ox+p.x-S.pan.p.x;S.oy=S.pan.oy+p.y-S.pan.p.y;draw();return;}
     if(!$('pointMenu').hidden)return;
     const raw=world(p);if(T?.areaStart){T.areaEnd=raw;draw();return;}
-    S.highlighted=!S.active?contourAt(raw):-1;trackReference(raw);preview(raw);draw();
+    if(editDrag&&dist(p,editDrag.start)>4)editDrag.moved=true;
+    editHover=!S.active&&!M?editHit(raw,e.shiftKey):null;
+    S.highlighted=!S.active&&!M?contourAt(raw):-1;trackReference(raw);preview(raw);draw();
   });
   listen(canvas,'pointerleave',()=>{if(S.rect?.stage==='rotation')S.rect.rotationRef=null;S.pointer=false;S.highlighted=-1;clearPending();draw();});
   function stopPan(e) {
+    if(editDrag){const dragged=editDrag.moved;releaseEditDrag();if(e.type==='pointercancel')cancelOperation();else if(dragged&&M&&!T)commitOperation();}
     const tap=e.type==='pointerup'&&S.middle&&!S.pan;
     if(canvas.hasPointerCapture(e.pointerId))canvas.releasePointerCapture(e.pointerId);
     if(S.pan&&S.rect?.stage==='rotation')S.rect.rotationRef=null;
@@ -829,8 +1086,9 @@ export function mountEditor(root,project,callbacks) {
   }
   listen(canvas,'pointerup',stopPan);listen(canvas,'pointercancel',stopPan);
   listen(canvas,'auxclick',e=>{if(e.button===1)e.preventDefault();});
-  listen(canvas,'dblclick',e=>{e.preventDefault();renameContour(world(mouse(e)));});
-  listen(canvas,'contextmenu',e=>{e.preventDefault();if(dismissContext){dismissContext=false;return;}if(T){cancelTemporary();return;}if(S.active&&S.tool==='graphical')closeContour();});
+  // Click and double click share the same inspector; there is no contour-name modal.
+  listen(canvas,'dblclick',e=>{if(!S.active&&!M){e.preventDefault();notifySelection();draw();}});
+  listen(canvas,'contextmenu',e=>{e.preventDefault();if(dismissContext){dismissContext=false;return;}if(T){cancelTemporary();return;}if(M){cancelOperation();return;}if(S.active){if(S.tool==='graphical')closeContour();return;}openContourMenu(world(mouse(e)),{x:e.clientX,y:e.clientY});});
   listen(canvas,'wheel',e=>{e.preventDefault();const f=e.deltaMode===1?16:e.deltaMode===2?S.h:1;
     if(S.rect?.stage==='rotation')S.rect.rotationRef=null;
     if(S.mode==='trackpad'&&!e.ctrlKey&&!e.metaKey){S.ox-=e.deltaX*f;S.oy-=e.deltaY*f;draw();}
@@ -839,6 +1097,8 @@ export function mountEditor(root,project,callbacks) {
   function escape() {
     if(!$('pointMenu').hidden){hidePointMenu(true);return;}
     if(T){cancelTemporary();return;}
+    if(M){cancelOperation();return;}
+    if(selectedId){clearSelection();canvas.focus({preventScroll:true});return;}
     if(S.rect&&cancelRectangleEdit())return;
     if(S.dir||S.lineDraft){clearEntry();if(S.raw)preview(S.raw);sync();draw();canvas.focus({preventScroll:true});return;}
     if(I.points.length||I.edge){resetInference();if(S.raw)preview(S.raw);sync();message('Направляющие сброшены. Продолжайте контур.');draw();canvas.focus({preventScroll:true});return;}
@@ -853,6 +1113,32 @@ export function mountEditor(root,project,callbacks) {
   // Prevent the native submit once handled, so a key press commits exactly one step.
   listen(document,'keydown',e=>{
     if(S.page!=='editor'||document.querySelector('dialog[open]')||e.isComposing||e.keyCode===229)return;
+    if(e.target.closest('.inspector-resize,[data-context-menu]'))return;
+    if(!$('pointMenu').hidden){menuKey(e);return;}
+    if(T){
+      if(e.key==='Escape'){e.preventDefault();cancelTemporary();return;}
+      if(e.key==='Enter'||e.code==='NumpadEnter'){e.preventDefault();if(!e.repeat&&T.candidate)commitTemporary(T.candidate);return;}
+      if(e.code!=='Space')return;
+    }
+    if(M&&(e.target===canvas||e.target===document.body||['operationAngle','operationDistance'].includes(e.target.id))){
+      if(e.key==='Escape'){e.preventDefault();cancelOperation();return;}
+      if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='z'){e.preventDefault();cancelOperation();return;}
+      if(!e.ctrlKey&&!e.metaKey&&!e.altKey&&['p','з'].includes(e.key.toLowerCase())){e.preventDefault();openPointMenu();return;}
+      if(e.key==='F8'){e.preventDefault();toggle('ortho');return;}
+      if(!e.target.matches('input,textarea')&&['f','а'].includes(e.key.toLowerCase())){e.preventDefault();fit();return;}
+
+      if(['Enter'].includes(e.key)||e.code==='NumpadEnter'){e.preventDefault();if(!e.repeat)commitOperation();return;}
+      if(M.kind!=='rotate'&&M.phase==='target'&&dirs[e.key]){
+        e.preventDefault();M.dir={...dirs[e.key]};sync();$('operationDistance').focus({preventScroll:true});$('operationDistance').select();return;
+      }
+      const editing=e.target.matches('input,textarea');
+      if(!editing&&/^[0-9.,+-]$/.test(e.key)&&M.phase==='target'){
+        if(M.kind!=='rotate'&&!M.dir)return;
+        e.preventDefault();const field=$(M.kind==='rotate'?'operationAngle':'operationDistance');field.focus();field.value=e.key;field.dispatchEvent(new Event('input',{bubbles:true}));return;
+      }
+      if(!editing&&e.key===' '){e.preventDefault();S.space=true;canvas.style.cursor='grab';return;}
+      if(!editing)return;
+    }
     if(!$('pointMenu').hidden){menuKey(e);return;}
     const input=e.target.matches('input,textarea,[contenteditable="true"]');
     const drawingInput=['originX','originY','lineLength','rectW','rectH'].includes(e.target.id);
@@ -886,7 +1172,7 @@ export function mountEditor(root,project,callbacks) {
     if(T&&e.code!=='Space')return;
     if(dirs[e.key]&&(!input||e.target.id==='lineLength')&&S.active&&S.points.length&&S.tool==='graphical'){
       e.preventDefault();if(!e.repeat)setDirection(e.key);return;}
-    if(input)return;
+    if(input||e.target.closest('sh-contour-inspector'))return;
     if(e.code==='Space'){e.preventDefault();S.space=true;canvas.style.cursor='grab';return;}
     if(['f','а'].includes(e.key.toLowerCase())){e.preventDefault();fit();return;}
     if(['c','с'].includes(e.key.toLowerCase())&&S.active){e.preventDefault();closeContour();return;}
@@ -902,7 +1188,7 @@ export function mountEditor(root,project,callbacks) {
   },true);
 
   listen(document,'keyup',e=>{if(e.code==='Space'){S.space=false;canvas.style.cursor=S.pan?'grabbing':'none';}});
-  listen(window,'blur',()=>{if(S.rect?.stage==='rotation')S.rect.rotationRef=null;S.space=false;S.pan=null;S.middle=null;clearPending();canvas.style.cursor='none';});
+  listen(window,'blur',()=>{releaseEditDrag();if(S.rect?.stage==='rotation')S.rect.rotationRef=null;S.space=false;S.pan=null;S.middle=null;clearPending();canvas.style.cursor='none';});
   const observer=new ResizeObserver(()=>resize());observer.observe($('stage'));
   Object.assign(S,{page:'editor',id:project.id,name:project.name,points:clone(project.points||[]),contours:clone(project.contours||[]),tool:project.draft?.tool==='rectangle'?'rectangle':'graphical',active:false});
   if(S.tool==='rectangle'&&S.points.length===1)S.rect=normalizeRectangle(project.draft?.rect);
@@ -913,9 +1199,9 @@ export function mountEditor(root,project,callbacks) {
   listen(window,'beforeunload',e=>{if(S.dirty){e.preventDefault();e.returnValue='';}});
   return {
     destroy(){if(disposed)return;disposed=true;S.page='home';abort.abort();observer.disconnect();clearPending();timers.forEach(clearTimeout);stage.destroy();},
-    getProject:projectData,isDirty:()=>S.dirty,save,
+    getProject:projectData,isDirty:()=>S.dirty,save,updateContour,clearSelection,startOperation,
 getState:()=>clone({
-    version:1,page:S.page,id:S.id,name:S.name,active:S.active,tool:S.tool,points:S.points,contours:S.contours,closed:S.closed,rect:S.rect,rectanglePreview:rectPoints(),
+    version:1,page:S.page,id:S.id,name:S.name,selectedId,operation:M?{kind:M.kind,phase:M.phase,index:M.index,base:M.base,probe:M.probe,projection:M.projection,angle:M.angle,error:M.error}:null,active:S.active,tool:S.tool,points:S.points,contours:S.contours,closed:S.closed,rect:S.rect,rectanglePreview:rectPoints(),
     temporary:T?{mode:T.mode,phase:T.phase,points:T.points,edges:T.edges,candidate:T.candidate,candidates:T.candidates}:null,menuOpen:!$('pointMenu').hidden,grid:S.grid,snap:S.snap,ortho:S.ortho,step:S.step,angleStep:S.angleStep,angleHighlight:S.rect?.stage==='rotation'?specialRectangleAngle(S.rect.angle):null,mode:S.mode,dir:S.dir,hover:S.hover,
     scale:S.scale,ox:S.ox,oy:S.oy,w:S.w,h:S.h,history:S.history.length,future:S.future.length,
     area:S.contours.length?Math.abs(signedArea(S.contours.at(-1).points))/1e6:0,perimeter:S.contours.length?perimeter(S.contours.at(-1).points)/1000:0,dirty:S.dirty,

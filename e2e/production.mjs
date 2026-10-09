@@ -49,6 +49,11 @@ try {
   await expect(page.locator('#contourTool')).toHaveAttribute('aria-pressed', 'false');
   await expect(page.locator('#commandHint')).toContainText('80');
   await page.locator('#save').click();
+  await expect(page.locator('#saveProjectDialog')).toBeVisible();
+  await page.locator('#projectName').fill('Дом 1');
+  await page.locator('#projectName').press('Enter');
+  await expect(page.locator('#saveProjectDialog')).toBeHidden();
+  await expect(page.locator('#save')).toBeEnabled();
   await page.reload();
   await expect(page.locator('.konvajs-content canvas')).toBeVisible();
   await expect(page.locator('#commandHint')).toContainText('80');
